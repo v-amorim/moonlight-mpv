@@ -185,7 +185,7 @@ Auto-skips chapters named opening, ending, credits or preview; `F11` turns it of
 
 ### [`watched-folder.lua`][watched_folder]
 
-`F10` toggles it: a finished file moves into `watched/` once the next file starts. Two known bugs: fires on an unfinished switch, skips a playlist's last file.
+`F10` toggles it. Watched means everything sitting before the furthest file you opened, so going back to an earlier episode to rewatch a detail still leaves it watched, and nothing moves until the playlist reaches the end of its last file or you close mpv. `script-opts/watched-folder.conf` sets the folder name, whether it sits next to each file or is one fixed `destination` for everything, and whether `require_eof` narrows watched down to the files that actually played to the end.
 
 ## AniList, rewritten around the player
 
@@ -248,7 +248,7 @@ Each carries an added header line naming its upstream, so a file on disk always 
 | [`sub-export.lua`][sub_export]                   | [kelciour][kelciour]              | Extracts the current subtitle next to the video | Runs in the background rather than freezing the player; spinner and percentage from ffmpeg's own progress; themed messages |
 | [`skip-to-silence.lua`][skip_silence]            | [detuur][detuur]                  | Jumps to the next silence, usually the OP's end | `F9` rather than `F3`; themed message                                                                                      |
 | [`anilistUpdater`][anilist]                      | [AzuredBlue][anilist_src]         | Marks the episode watched on AniList at 85%     | [Rewritten around the player](#anilist-rewritten-around-the-player)                                                        |
-| [`autoload.lua`][autoload]                       | [mpv][autoload_src]               | Queues the neighbouring files in the folder     | Stock                                                                                                                      |
+| [`autoload.lua`][autoload]                       | [mpv][autoload_src]               | Queues the neighbouring files in the folder     | Stock; `directory_mode=ignore`, so the playlist never descends into `watched/`                                             |
 | [`chapters.lua`][chapters]                       | [mar04][chapters_src]             | Create, edit and save chapters                  | Stock; driven by [`chapters-menu.lua`][chapters_menu] rather than its own bindings                                         |
 | [`clipshot.lua`][clipshot]                       | [ObserverOfTime][clipshot_src]    | Screenshot straight to the clipboard            | Stock                                                                                                                      |
 | [`sub-select.lua`][sub_select]                   | [CogentRedTester][sub_select_src] | Picks audio and subtitle tracks by rules        | Publishes its rules and its match over `user-data`, for [`sub-select-menu.lua`][sub_select_menu]                           |
