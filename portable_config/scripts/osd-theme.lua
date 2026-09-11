@@ -1,6 +1,8 @@
 -- One OSD message shape for input.conf:
 --   expand-properties script-message-to osd_theme say "<label>" "<state>" "<detail>"
 -- State may be empty. "yes"/"no" become a green "on" / red "off".
+-- For `af toggle @name:...`, `say-filter "<label>" "<name>" "<detail>"` reads the
+-- state back off the filter chain instead.
 
 -- Moonlight, in the &HBBGGRR& order ASS wants, from the oh-my-posh palette.
 local LABEL = '&HFAEEEE&' -- terminal_brightgray #EEEEFA
@@ -56,7 +58,7 @@ local function stop_spinning()
     end
 end
 
-mp.register_script_message('say', function(label, state, detail)
+local function show(label, state, detail)
     stop_spinning()
     overlay.data = body(ANCHOR, label, state, detail)
     overlay:update()
@@ -65,6 +67,17 @@ mp.register_script_message('say', function(label, state, detail)
     hide_timer = mp.add_timeout(mp.get_property_number('osd-duration', 1000) / 1000, function()
         overlay:remove()
     end)
+end
+
+mp.register_script_message('say', show)
+
+-- `af toggle` adds or removes the filter outright, so presence is the state.
+mp.register_script_message('say-filter', function(label, filter_label, detail)
+    local on = false
+    for _, filter in ipairs(mp.get_property_native('af') or {}) do
+        on = on or filter.label == filter_label
+    end
+    show(label, on and 'yes' or 'no', detail)
 end)
 
 -- For a script that spins through `busy` and then draws its own full screen
