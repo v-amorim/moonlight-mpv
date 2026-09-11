@@ -2,6 +2,9 @@
 
 local utils = require("mp.utils")
 
+local options = { auto_update = true, auto_update_paths = "animation" }
+require("mp.options").read_options(options, "anilistUpdater")
+
 local function say(label, state, detail)
 	mp.commandv("script-message-to", "osd_theme", "say", label, state or "", detail or "")
 end
@@ -67,12 +70,43 @@ end
 
 local python_command = get_python_command()
 
+local function absolute_path()
+	local directory = mp.get_property("working-directory")
+	local path = mp.get_property("path")
+	if not directory or not path then
+		return nil
+	end
+	return ((directory:sub(-1) == "/" or directory:sub(-1) == "\\") and directory or directory .. "/") .. path
+end
+
+-- Only the anime library auto-updates. Anywhere else a wrong guess would push a
+-- random episode onto a random entry, so those files wait for a keypress.
+local function in_library()
+	if options.auto_update_paths:match("^%s*$") then
+		return true
+	end
+
+	local path = absolute_path()
+	if not path then
+		return false
+	end
+
+	path = path:lower()
+	for fragment in options.auto_update_paths:gmatch("[^,]+") do
+		fragment = fragment:match("^%s*(.-)%s*$"):lower()
+		if fragment ~= "" and path:find(fragment, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
 -- Make sure it doesnt trigger twice in 1 video
 local triggered = false
 
 -- Function to check if we've reached 85% of the video
 function check_progress()
-	if triggered then
+	if triggered or not options.auto_update then
 		return
 	end
 
@@ -80,8 +114,10 @@ function check_progress()
 
 	if percent_pos then
 		if percent_pos >= 85 then
-			update_anilist("update")
 			triggered = true
+			if in_library() then
+				update_anilist("update")
+			end
 		end
 	end
 end
@@ -92,10 +128,7 @@ function update_anilist(action)
 		say("AniList", "opening", "the page for this anime, in your browser")
 	end
 	local script_dir = debug.getinfo(1).source:match("@?(.*/)")
-	local directory = mp.get_property("working-directory")
-	-- It seems like in Linux working-directory sometimes returns it without a "/" at the end
-	local path = ((directory:sub(-1) == "/" or directory:sub(-1) == "\\") and directory or directory .. "/")
-		.. mp.get_property("path") -- Absolute path of the file we are playing
+	local path = absolute_path()
 	local table = {}
 	table.name = "subprocess"
 	table.args = { python_command, script_dir .. "anilistUpdater.py", path, action }
@@ -254,11 +287,7 @@ function open_picker(seed)
 end
 
 local function pin(anime_id)
-	local directory = mp.get_property("working-directory")
-	local path = ((directory:sub(-1) == "/" or directory:sub(-1) == "\\") and directory or directory .. "/")
-		.. mp.get_property("path")
-
-	python({ "--pin", path, anime_id }, function(output)
+	python({ "--pin", absolute_path(), anime_id }, function(output)
 		report(output)
 		-- Fixing the match is never the goal in itself, so land back on the menu
 		-- with the corrected entry showing and the write one keypress away.
