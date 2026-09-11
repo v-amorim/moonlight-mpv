@@ -3,12 +3,12 @@
 -- State may be empty. "yes"/"no" become a green "on" / red "off".
 
 -- Moonlight, in the &HBBGGRR& order ASS wants, from the oh-my-posh palette.
-local LABEL = '&HFFD9CE&' -- terminal_brightgray #CED9FF
+local LABEL = '&HFAEEEE&' -- terminal_brightgray #EEEEFA
 local ON = '&H95EF49&' -- terminal_green #49EF95
 local OFF = '&H715FCA&' -- terminal_error #CA5F71
-local VALUE = '&HF3AB5D&' -- terminal_blue #5DABF3
-local DETAIL = '&HE6B9AC&' -- terminal_bluegray #ACB9E6
-local OUTLINE = '&H36231E&' -- main_background #1E2336
+local VALUE = '&HD08673&' -- terminal_blue #7386D0
+local DETAIL = '&HF5C6B9&' -- terminal_bluegray #B9C6F5
+local OUTLINE = '&H261714&' -- main_background #141726
 
 -- mpv answers in its own vocabulary: loop-file set to "yes" reads back as "inf".
 local BOOLEAN_WORDS = { yes = 'on', on = 'on', inf = 'on', no = 'off', off = 'off' }

@@ -47,18 +47,18 @@ end
 
 local C = {}
 for name, rgb in pairs({
-	bg = "0d0e17", -- #0d0e17  full-screen dim behind the list
-	panel = "191726", -- #191726  list panel background
-	border = "3c466f", -- #3c466f  list panel border
-	text = "f8eaf8", -- #f8eaf8  row text + "Subtitles" header
-	dim = "aea4bf", -- #aea4bf  dimmed text (line count + footer hint)
-	time = "5dabf3", -- #5dabf3  timestamp column
-	cur = "7386d0", -- #7386d0  current line (under the playhead)
-	sel_bg = "303751", -- #303751  selected row background
-	hover_bg = "272d44", -- #272d44  hovered row background
-	scroll_trk = "272d44", -- #272d44  scrollbar track
-	scroll_thb = "5dabf3", -- #5dabf3  scrollbar thumb
-	match = "a9c0ff", -- #a9c0ff  the typed words, picked out inside a row
+	bg = "0D0E17", -- #0D0E17  full-screen dim behind the list
+	panel = "141726", -- #141726  list panel background
+	border = "252A42", -- #252A42  list panel border
+	text = "EEEEFA", -- #EEEEFA  row text + "Subtitles" header
+	dim = "9BA3C4", -- #9BA3C4  dimmed text (line count + footer hint)
+	time = "8A9BE0", -- #8A9BE0  timestamp column
+	cur = "7386D0", -- #7386D0  current line (under the playhead)
+	sel_bg = "252A42", -- #252A42  selected row background
+	hover_bg = "1C2033", -- #1C2033  hovered row background
+	scroll_trk = "1C2033", -- #1C2033  scrollbar track
+	scroll_thb = "8A9BE0", -- #8A9BE0  scrollbar thumb
+	match = "A2B0EA", -- #A2B0EA  the typed words, picked out inside a row
 }) do
 	C[name] = to_ass(rgb)
 end

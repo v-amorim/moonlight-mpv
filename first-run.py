@@ -73,12 +73,12 @@ def _rgb(hexcode: str) -> str:
 
 
 # Moonlight: the palette the rest of this config is themed on.
-TEXT = _rgb("#ced9ff")
-ACCENT = _rgb("#7386d0")
-MUTED = _rgb("#aea4bf")
-GOOD = _rgb("#49ef95")
-ALERT = _rgb("#ca5f71")
-LINK = _rgb("#5dabf3")
+TEXT = _rgb("#EEEEFA")
+ACCENT = _rgb("#7386D0")
+MUTED = _rgb("#9BA3C4")
+GOOD = _rgb("#49EF95")
+ALERT = _rgb("#CA5F71")
+LINK = _rgb("#8A9BE0")
 
 BOLD = _c("\033[1m")
 RESET = _c("\033[0m")

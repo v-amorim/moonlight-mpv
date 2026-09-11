@@ -205,22 +205,22 @@ end
 
 local C = {}
 for name, rgb in pairs({
-	dim = "0d0e17", -- #0d0e17  full-screen dim behind the keyboard
-	key_bg = "191726", -- #191726  unbound key fill
-	key_brd = "303751", -- #303751  unbound key border
-	bind_bg = "1f2335", -- #1f2335  bound key fill
-	bind_brd = "3c466f", -- #3c466f  bound key border
-	hover_bg = "3c466f", -- #3c466f  hovered key fill
-	hover_brd = "7386d0", -- #7386d0  hovered key border
-	match_bg = "2b2a3d", -- #2b2a3d  search-matched key fill
-	match_brd = "d3d0de", -- #d3d0de  search-matched key border + query text
-	match_hl = "a9c0ff", -- #a9c0ff  the typed characters inside a description
-	text = "f8eaf8", -- #f8eaf8  key labels + info panel text
-	text_dim = "aea4bf", -- #aea4bf  unbound key labels + "No bindings" text
-	panel_bg = "191726", -- #191726  info panel background
-	panel_brd = "3c466f", -- #3c466f  info panel border
-	accent = "7386d0", -- #7386d0  binding combos + layout button + cursor dot
-	header = "ced9ff", -- #ced9ff  info panel title (key name)
+	dim = "0D0E17", -- #0D0E17  full-screen dim behind the keyboard
+	key_bg = "141726", -- #141726  unbound key fill
+	key_brd = "1C2033", -- #1C2033  unbound key border
+	bind_bg = "1C2033", -- #1C2033  bound key fill
+	bind_brd = "252A42", -- #252A42  bound key border
+	hover_bg = "252A42", -- #252A42  hovered key fill
+	hover_brd = "7386D0", -- #7386D0  hovered key border
+	match_bg = "2F3654", -- #2F3654  search-matched key fill
+	match_brd = "B9C6F5", -- #B9C6F5  search-matched key border + query text
+	match_hl = "A2B0EA", -- #A2B0EA  the typed characters inside a description
+	text = "EEEEFA", -- #EEEEFA  key labels + info panel text
+	text_dim = "9BA3C4", -- #9BA3C4  unbound key labels + "No bindings" text
+	panel_bg = "141726", -- #141726  info panel background
+	panel_brd = "252A42", -- #252A42  info panel border
+	accent = "7386D0", -- #7386D0  binding combos + layout button + cursor dot
+	header = "EEEEFA", -- #EEEEFA  info panel title (key name)
 	sep = "6e7681", -- #6e7681  separator line between bindings
 }) do
 	C[name] = to_ass(rgb)

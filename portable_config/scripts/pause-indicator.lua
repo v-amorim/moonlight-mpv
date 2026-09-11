@@ -17,7 +17,7 @@ local mp = require("mp")
 
 local FONT = "MaterialIconsRound-Regular"
 local ICON = "pause_circle_filled"
-local COLOR = "F8EAF8" -- #f8eaf8, the Moonlight text colour, palindromic in BGR
+local COLOR = "FAEEEE" -- the Moonlight text colour #EEEEFA, written in BGR for ASS
 local SIZE = 0.055 -- share of the OSD height
 local MARGIN = 0.022 -- share of the OSD height, from both edges
 

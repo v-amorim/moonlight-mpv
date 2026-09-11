@@ -54,7 +54,7 @@ mpv has no official Windows binary; pick a build from [mpv.io/installation][mpv_
 By hand instead: copy `portable_config/` next to `mpv.exe`, add uosc and shaders yourself.
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"darkMode": true, "background": "#0d0e17", "textColor": "#f8eaf8", "treeView": {"labelColor": "#f8eaf8", "lineColor": "#30363d", "iconColor": "#8b949e"}}}}%%
+%%{init: {"theme": "base", "themeVariables": {"darkMode": true, "background": "#0D0E17", "textColor": "#EEEEFA", "treeView": {"labelColor": "#EEEEFA", "lineColor": "#30363d", "iconColor": "#8b949e"}}}}%%
 treeView-beta
 portable_config/
     mpv.conf
@@ -219,7 +219,7 @@ Token setup: open [the authorize link][anilist_auth], approve it, copy the token
 Most run off playback events, no keypress needed.
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"darkMode": true, "background": "#0d0e17", "mainBkg": "#191726", "primaryColor": "#191726", "primaryTextColor": "#f8eaf8", "primaryBorderColor": "#7386d0", "secondaryColor": "#282e46", "secondaryTextColor": "#f8eaf8", "secondaryBorderColor": "#5dabf3", "tertiaryColor": "#3c466f", "tertiaryTextColor": "#f8eaf8", "tertiaryBorderColor": "#79c0ff", "lineColor": "#7386d0", "textColor": "#f8eaf8", "titleColor": "#f8eaf8", "nodeBorder": "#7386d0", "nodeTextColor": "#f8eaf8", "clusterBkg": "#12131f", "clusterBorder": "#30363d", "edgeLabelBackground": "#191726", "arrowheadColor": "#7386d0", "border1": "#7386d0", "border2": "#8b949e", "errorBkgColor": "#3c466f", "errorTextColor": "#f8eaf8", "fontFamily": "Mulish, system-ui, sans-serif", "fontSize": "14px"}}}%%
+%%{init: {"theme": "base", "themeVariables": {"darkMode": true, "background": "#0D0E17", "mainBkg": "#141726", "primaryColor": "#141726", "primaryTextColor": "#EEEEFA", "primaryBorderColor": "#7386d0", "secondaryColor": "#252A42", "secondaryTextColor": "#EEEEFA", "secondaryBorderColor": "#8A9BE0", "tertiaryColor": "#252A42", "tertiaryTextColor": "#EEEEFA", "tertiaryBorderColor": "#79c0ff", "lineColor": "#7386d0", "textColor": "#EEEEFA", "titleColor": "#EEEEFA", "nodeBorder": "#7386d0", "nodeTextColor": "#EEEEFA", "clusterBkg": "#12131f", "clusterBorder": "#30363d", "edgeLabelBackground": "#141726", "arrowheadColor": "#7386d0", "border1": "#7386d0", "border2": "#8b949e", "errorBkgColor": "#252A42", "errorTextColor": "#EEEEFA", "fontFamily": "Mulish, system-ui, sans-serif", "fontSize": "14px"}}}%%
 flowchart TB
   subgraph opens["When a file opens"]
     direction TB
