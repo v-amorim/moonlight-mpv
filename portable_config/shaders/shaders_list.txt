@@ -1,67 +1,74 @@
-A4K_Dark.glsl
-A4K_Thin.glsl
-A4K_Upscale_L.glsl
-Adaptive-Sharpen.glsl
-adasharp.glsl
-adasharpA.glsl
-Anime4K_AutoDownscalePre_x2.glsl
-Anime4K_AutoDownscalePre_x4.glsl
-Anime4K_Clamp_Highlights.glsl
-Anime4K_Darken_Fast.glsl
-Anime4K_Darken_HQ.glsl
-Anime4K_Darken_VeryFast.glsl
-Anime4K_Deblur_DoG.glsl
-Anime4K_Deblur_Original.glsl
-Anime4K_Denoise_Bilateral_Mean.glsl
-Anime4K_Denoise_Bilateral_Median.glsl
-Anime4K_Denoise_Bilateral_Mode.glsl
-Anime4K_Restore_CNN_L.glsl
-Anime4K_Restore_CNN_M.glsl
-Anime4K_Restore_CNN_S.glsl
-Anime4K_Restore_CNN_Soft_L.glsl
-Anime4K_Restore_CNN_Soft_M.glsl
-Anime4K_Restore_CNN_Soft_S.glsl
-Anime4K_Restore_CNN_Soft_UL.glsl
-Anime4K_Restore_CNN_Soft_VL.glsl
-Anime4K_Restore_CNN_UL.glsl
-Anime4K_Restore_CNN_VL.glsl
-Anime4K_Thin_Fast.glsl
-Anime4K_Thin_HQ.glsl
-Anime4K_Thin_VeryFast.glsl
-Anime4K_Upscale_CNN_x2_L.glsl
-Anime4K_Upscale_CNN_x2_M.glsl
-Anime4K_Upscale_CNN_x2_S.glsl
-Anime4K_Upscale_CNN_x2_UL.glsl
-Anime4K_Upscale_CNN_x2_VL.glsl
-Anime4K_Upscale_Deblur_DoG_x2.glsl
-Anime4K_Upscale_Deblur_Original_x2.glsl
-Anime4K_Upscale_Denoise_CNN_x2_L.glsl
-Anime4K_Upscale_Denoise_CNN_x2_M.glsl
-Anime4K_Upscale_Denoise_CNN_x2_S.glsl
-Anime4K_Upscale_Denoise_CNN_x2_UL.glsl
-Anime4K_Upscale_Denoise_CNN_x2_VL.glsl
-Anime4K_Upscale_DoG_x2.glsl
-Anime4K_Upscale_DTD_x2.glsl
-Anime4K_Upscale_Original_x2.glsl
-CAS.glsl
-CfL_P.glsl
-F16.glsl
-F16_LA.glsl
-FSRCNNX_x2_8-0-4-1.glsl
-FSR_EASU.glsl
-KrigBilateral.glsl
-nlmeans_HQ.glsl
-nlmeans_L_HQ.glsl
-nnedi3-nns128-win8x6.hook
-nnedi3-nns32-win8x6.hook
-NVSharpen.glsl
-RAVU-Lite-r4.hook
-RAVU-r4.hook
-ravu_L_ar_r4.hook
-ravu_Z_ar_r3.hook
-SSimDownscaler.glsl
-ssimds.glsl
-ssimsr.glsl
-SSimSuperRes Options.txt
-SSimSuperRes.glsl
-SSimSuperResMitchell.glsl
+Shader sources, for rebuilding this folder on a fresh install.
+Grouped by upstream repo. Folder paths are relative to portable_config/shaders/.
+
+== Anime4K/ ==
+Used by: input.conf CTRL+1-6, CTRL+!-&, uosc Video > Shaders > Anime4K
+Source: https://github.com/bloc97/Anime4K
+Grab the GLSL release (currently v4.0.1) from the Releases page, "GLSL" asset.
+Every Anime4K_*.glsl file in this repo's release goes into Anime4K/.
+
+== ArtCNN/ ==
+NOT currently used (CTRL+8 / CTRL+SHIFT+8 were removed, too heavy on this GPU).
+Source of ArtCNN_C4F32_DS.glsl: https://github.com/Artoriuz/ArtCNN, GLSL/ArtCNN_C4F32_DS.glsl
+ArtCNN_C4F64_DS.glsl has NO verified upstream source, it is not in the official
+ArtCNN repo. Left over from an earlier session, candidate for deletion along
+with the rest of this now-unused folder.
+
+== RAVU/ ==
+Not wired to a keybind right now, kept as a fresher alternative to the legacy
+ravu_L_ar_r4.hook / ravu_Z_ar_r3.hook below.
+Source: https://github.com/bjin/mpv-prescalers, gather/ folder (fastest variant set)
+Files here: ravu-lite-ar-r2/r3/r4.hook, ravu-r2/r3/r4.hook, ravu-3x-r2/r3/r4.hook,
+ravu-zoom-ar-r2/r3.hook
+
+== hdr-toys/ ==
+Not wired to anything yet, pending a check of the monitor's real HDR spec.
+Source: https://github.com/natural-harmonia-gropius/hdr-toys
+
+== Retro/, original 7 (CRT and stylize) ==
+crt-lottes.glsl, crt-hyllian.glsl, crt-gizmo.glsl, crt-aperture-dsaa.glsl,
+crt-royale-fb.glsl, technicolor.glsl, dither.glsl
+Source not tracked, these were already in this config before the source-audit
+session, no matching upstream repo confirmed. Treat as vendored as-is.
+
+== Retro/, added later ==
+Used by: uosc Video > Shaders > Retro
+- vhs.glsl
+  Source: https://github.com/shmup/vhs (vhs.glsl)
+- crosshatch.glsl, dots.glsl, bw.glsl, grain.glsl
+  Source: https://github.com/butterw/bShaders
+  Paths: Effects/CrossHatch.hook.glsl, Effects/dots.hook.glsl,
+  mpv/bw.hook.glsl, FilmGrain_Noise/mpv/grain.glsl
+- gba.glsl, crt-guest-advanced-ntsc.glsl
+  Source: https://github.com/hhirtz/mpv-retro-shaders
+- anaglyph.glsl
+  Written for this config, no upstream. No mpv port existed for this effect.
+
+== Root flat files ==
+Used by: uosc Video > Shaders (Sharpen, Line Art, Neural Scaler, Generic Scaler)
+- Adaptive-Sharpen.glsl, adasharp.glsl, adasharpA.glsl (retuned for line art)
+  Algorithm: https://github.com/bacondither/Adaptive-sharpen
+  GLSL/mpv port: https://gist.github.com/igv/8a77e4eb8276753b54bb94c1c50c317e
+- A4K_Dark.glsl, A4K_Thin.glsl, A4K_Upscale_L.glsl
+  Source: https://github.com/bloc97/Anime4K (single-file variants, renamed by
+  whoever built this pack originally)
+- CAS.glsl
+  Source: https://gist.github.com/agyild/bbb4e58298b2f86aa24da3032a0d2ee6
+  (AMD FidelityFX CAS, mpv port)
+- FSR_EASU.glsl
+  Source: https://gist.github.com/agyild/82219c545228d70c5604f865ce0b0ce5
+  (AMD FidelityFX Super Resolution, mpv port)
+- NVSharpen.glsl
+  Source: https://gist.github.com/agyild/7e8951915b2bf24526a9343d951db214
+  (NVIDIA Image Scaling, mpv port; original SDK at
+  https://github.com/NVIDIAGameWorks/NVIDIAImageScaling)
+- F16.glsl, F16_LA.glsl
+  Source: https://github.com/igv/FSRCNN-TensorFlow (FSRCNNX releases)
+- CfL_P.glsl
+  Source: https://github.com/Artoriuz/glsl-chroma-from-luma-prediction
+- ssimsr.glsl (SSimSuperRes), ssimds.glsl (SSimDownscaler)
+  Source: https://gist.github.com/igv/2364ffa6e81540f29cb7ab4c9bc05b6b
+- nlmeans_HQ.glsl, nlmeans_L_HQ.glsl
+  Source: https://github.com/AN3223/dotfiles, .config/mpv/shaders/
+- ravu_L_ar_r4.hook, ravu_Z_ar_r3.hook
+  Source: https://github.com/bjin/mpv-prescalers (legacy naming, superseded by RAVU/ above)
