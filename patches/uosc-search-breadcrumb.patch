@@ -1,0 +1,26 @@
+--- a/portable_config/scripts/uosc/elements/Menu.lua
++++ b/portable_config/scripts/uosc/elements/Menu.lua
+@@ -918,10 +918,12 @@
+ 	for _, item in ipairs(items) do
+ 		if item.selectable ~= false then
+ 			local prefixed_title = prefix and prefix .. ' / ' .. (item.title or '') or item.title
+-			haystacks[#haystacks + 1] = item.title
++			-- Local patch: search the whole breadcrumb, not just the leaf title,
++			-- or a query like "screenshot" never finds "Window" under it.
++			haystacks[#haystacks + 1] = prefixed_title
+ 			flat_items[#flat_items + 1] = item
+ 
+ 			if item.items and recursive then
+@@ -939,9 +941,11 @@
+ 		if item.selectable ~= false and not (item.items and recursive) and not seen[item] then
+ 			local bold = item.bold or options.font_bold
+ 			local font_color = item.active and fgt or bgt
+-			local ass_safe_title = highlight_match(matched_title, positions, font_color, bold) or nil
++			-- Local patch: matched_title is already the full breadcrumb (see the
++			-- haystack build above), so it is highlighted as-is, no re-prefixing.
++			local ass_safe_title = highlight_match(matched_title, positions, font_color, bold) or nil
+ 			local new_item = table_assign({}, item)
+ 			new_item.title = prefixed_title
+-			new_item.ass_safe_title = prefix and prefix .. ' / ' .. (ass_safe_title or '') or ass_safe_title
++			new_item.ass_safe_title = ass_safe_title
+ 			new_item.score = score
