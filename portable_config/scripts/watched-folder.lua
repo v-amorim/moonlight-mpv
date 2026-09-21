@@ -80,7 +80,9 @@ local function watchedPaths()
 		upTo = upTo - 1
 	end
 	for i = 1, upTo do
-		paths[#paths + 1] = playlistPaths[i]
+		if visited[key(playlistPaths[i])] then
+			paths[#paths + 1] = playlistPaths[i]
+		end
 	end
 	return paths
 end
