@@ -73,7 +73,7 @@ Anime4K shaders must sit in `shaders/Anime4K/`, the name `profiles.conf` and `CT
 
 ## Scripts I wrote
 
-Twelve, the interface ones all on the Moonlight palette.
+Thirteen, the interface ones all on the Moonlight palette.
 
 ### [`keybind-visualizer.lua`][keybind_visualizer]
 
@@ -170,6 +170,14 @@ One shape and palette for every on-screen message, used by every script here ins
 ### [`reset-all.lua`][reset_all]
 
 `ALT+F5` resets playback (zoom, pan, aspect, speed, delays, subtitles, colour, shaders) without reloading the file. Volume and mute are left alone.
+
+### [`active-state.lua`][active_state]
+
+`F3` lists everything currently off this config's own default: audio filters, deinterlace, speed, subtitle overrides, shaders and more. The default for each is snapshotted once at startup, from whatever `mpv.conf` actually set, so nothing here is a guessed factory value. Click an entry to put just that one back.
+
+| Everything not at default right now |
+| ------------------------------------ |
+| ![Active state][shot_active_state]  |
 
 ### [`pause-indicator.lua`][pause_indicator]
 
@@ -277,6 +285,7 @@ Shaders, [Anime4K][Anime4k] among them, are too large to commit; [`shaders_list.
 [shot_map_search]: assets/keybind-visualizer-search.png
 [shot_map_hover]: assets/keybind-visualizer-hover.png
 [shot_osd_theme]: assets/osd-theme.png
+[shot_active_state]: assets/active-state.png
 [shot_sub_seek]: assets/sub-seek.png
 [shot_sub_search]: assets/sub-seek-search.png
 [shot_menu_root]: assets/uosc-menu-root.png
@@ -304,6 +313,7 @@ Shaders, [Anime4K][Anime4k] among them, are too large to commit; [`shaders_list.
 [keybind_visualizer_conf]: ./portable_config/script-opts/keybind-visualizer.conf
 [keybind_visualizer_layouts]: ./portable_config/script-opts/keybind-visualizer-layouts.json
 [sub_seek]: ./portable_config/scripts/sub-seek.lua
+[active_state]: ./portable_config/scripts/active-state.lua
 [Anime4k]: https://github.com/bloc97/Anime4K
 [UOSC]: https://github.com/tomasklaen/uosc
 [mpv_conf]: ./portable_config/mpv.conf
