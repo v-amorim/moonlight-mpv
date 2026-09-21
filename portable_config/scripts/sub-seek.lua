@@ -599,6 +599,18 @@ local function render()
 		C.dim
 	)
 
+	-- cursor dot (sits exactly under the real pointer when spaces are aligned)
+	if mouse_x then
+		local r = math.max(3, round(g.row_h * 0.12))
+		a[#a + 1] = string.format(
+			"{\\an7\\pos(%d,%d)\\bord1\\3c&H000000&\\shad0\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
+			round(mouse_x - r),
+			round(mouse_y - r),
+			C.cur,
+			rect_draw(r * 2, r * 2)
+		)
+	end
+
 	overlay.data = table.concat(a, "\n")
 	overlay:update()
 end
