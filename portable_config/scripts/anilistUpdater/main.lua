@@ -461,9 +461,13 @@ local function root_items(menu)
 	add(match_item(menu))
 
 	local entry = menu.match and menu.match.entry
-	local seen = entry and menu.episode and entry.progress and entry.progress >= menu.episode
+	local hint = menu.season_hint
+	local target_episode = hint and hint.episode or menu.episode
+	local seen = entry and target_episode and entry.progress and entry.progress >= target_episode
 
-	local mark = { title = "Mark episode " .. tostring(menu.episode) .. " watched", value = "update" }
+	local label = hint and string.format("S%02dE%02d (%d)", hint.season, hint.episode, menu.episode)
+		or tostring(menu.episode)
+	local mark = { title = "Mark " .. label .. " watched", value = "update" }
 	if not menu.match then
 		mark.hint, mark.muted, mark.selectable = "no anime yet", true, false
 	elseif seen then

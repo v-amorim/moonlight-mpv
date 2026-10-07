@@ -105,58 +105,105 @@ class AniListUpdater:
         print(f"API request failed: {response.status_code} - {response.text}")
         return None
 
-    # Gets all seasons of an anime
-    def get_anime_seasons(self, anime_name):
+    # Fetches one anime plus its PREQUEL/SEQUEL relations, for chain walking
+    def _fetch_with_relations(self, anime_id):
         query = """
-        query ($search: String, $page: Int) {
-            Page(page: $page) {
-                media(search: $search, type: ANIME, format: TV) {
-                    id
-                    title { romaji }
-                    season
-                    seasonYear
-                    episodes
-                    duration
-                    status
+        query ($id: Int) {
+            Media(id: $id, type: ANIME) {
+                id
+                title { romaji }
+                season
+                seasonYear
+                episodes
+                duration
+                status
+                relations {
+                    edges {
+                        relationType
+                        node { id format }
+                    }
                 }
             }
         }
         """
-        variables = {"search": anime_name, "page": 1}
-        response = self.make_api_request(query, variables)
+        response = self.make_api_request(query, {"id": anime_id})
         if response and "data" in response:
-            seasons = response["data"]["Page"]["media"]
+            return response["data"]["Media"]
+        return None
 
-            # Filter only to those whose duration > 21 OR those who have no duration and are releasing.
-            # This is due to newly added anime having duration as null
-            seasons = [
-                season
-                for season in seasons
-                if (season["duration"] is None and season["status"] == "RELEASING")
-                or (season["duration"] is not None and season["duration"] > 21)
-            ]
+    # Gets just enough seasons around an anime to cover an absolute episode
+    # number, by walking its PREQUEL/SEQUEL relation chain outward from it.
+    # Title search breaks once a season's own title (e.g. "2nd Season") no
+    # longer fuzzy-matches its prequel, so this walks relations instead.
+    # Stopping as soon as the chain covers the target also keeps it from
+    # wandering into unrelated bonus prequels/sequels (side stories, recaps)
+    # that sit further out on the same relation graph.
+    def get_anime_seasons(self, anime_id, absolute_episode):
+        def linked(media, relation_type):
+            for edge in media["relations"]["edges"]:
+                if edge["relationType"] == relation_type and edge["node"]["format"] in ("TV", "ONA"):
+                    return edge["node"]["id"]
+            return None
 
-            return sorted(seasons, key=lambda x: (x["seasonYear"], self.season_order(x["season"])))
-        return []
+        anchor = self._fetch_with_relations(anime_id)
+        if anchor is None:
+            return []
 
-    @staticmethod
-    def season_order(season):
-        return {"WINTER": 1, "SPRING": 2, "SUMMER": 3, "FALL": 4}.get(season, 5)
+        chain = [anchor]
+        total = anchor["episodes"] or 0
+        visited = {anime_id}
+
+        node = anchor
+        while total < absolute_episode:
+            prequel_id = linked(node, "PREQUEL")
+            if not prequel_id or prequel_id in visited:
+                break
+            visited.add(prequel_id)
+            node = self._fetch_with_relations(prequel_id)
+            chain.insert(0, node)
+            total += node["episodes"] or 0
+
+        node = chain[-1]
+        while total < absolute_episode:
+            sequel_id = linked(node, "SEQUEL")
+            if not sequel_id or sequel_id in visited:
+                break
+            visited.add(sequel_id)
+            node = self._fetch_with_relations(sequel_id)
+            chain.append(node)
+            total += node["episodes"] or 0
+
+        return chain
 
     # Finds the season and episode of an anime with absolute numbering
-    def find_season_and_episode(self, anime_name, absolute_episode):
-        seasons = self.get_anime_seasons(anime_name)
+    def find_season_and_episode(self, anime_id, absolute_episode):
+        seasons = self.get_anime_seasons(anime_id, absolute_episode)
         accumulated_episodes = 0
-        for season in seasons:
+        for season_number, season in enumerate(seasons, start=1):
             season_episodes = season["episodes"]
-            if accumulated_episodes + season_episodes >= absolute_episode:
+            if season_episodes and accumulated_episodes + season_episodes >= absolute_episode:
                 return (
                     season["title"]["romaji"],
                     season["id"],
                     absolute_episode - accumulated_episodes,
+                    season_number,
                 )
-            accumulated_episodes += season_episodes
+            accumulated_episodes += season_episodes or 0
         return None
+
+    # When the raw file episode is above the matched entry's total, resolves
+    # what season/episode it actually corresponds to, for the menu to display.
+    def season_hint(self, match, episode):
+        entry = match.get("entry") if match else None
+        if isinstance(episode, list):
+            episode = min(episode)
+        if not entry or not entry.get("episodes") or episode <= entry["episodes"]:
+            return None
+        result = self.find_season_and_episode(match["id"], episode)
+        if not result:
+            return None
+        _, _, new_episode, season_number = result
+        return {"season": season_number, "episode": new_episode}
 
     def handle_filename(self, filename):
         file_info = self.parse_filename(filename)
@@ -466,12 +513,17 @@ class AniListUpdater:
         # Try to guess season and episode.
         if total_episodes is not None and file_progress > total_episodes:
             print("Episode number is in absolute value. Converting to season and episode.")
-            if result := self.find_season_and_episode(anime_name, file_progress):
-                title, new_anime_id, new_episode = result
-                print(f"Absolute episode {file_progress} corresponds to Anime: {title}, Episode: {new_episode}")
-                # Call the function again with the updated anime id and episode.
-                self.update_episode_count(new_anime_id, new_episode, title)
-                return
+            result = self.find_season_and_episode(anime_id, file_progress)
+            if result is None:
+                raise Exception(
+                    f"Could not resolve absolute episode {file_progress} to a season "
+                    f"for {anime_name} (relation chain has no season covering it)"
+                )
+            title, new_anime_id, new_episode, _season_number = result
+            print(f"Absolute episode {file_progress} corresponds to Anime: {title}, Episode: {new_episode}")
+            # Call the function again with the updated anime id and episode.
+            self.update_episode_count(new_anime_id, new_episode, title)
+            return
 
         # Only launch anilist
         if sys.argv[2] == "launch":
@@ -580,7 +632,12 @@ def main():
                     match["entry"] = updater.list_entry(match["id"])
 
                 payload.update(
-                    {"guess": file_info["name"], "episode": file_info["episode"], "match": match}
+                    {
+                        "guess": file_info["name"],
+                        "episode": file_info["episode"],
+                        "match": match,
+                        "season_hint": updater.season_hint(match, file_info["episode"]),
+                    }
                 )
 
             print(JSON_PREFIX + json.dumps(payload))
@@ -625,7 +682,12 @@ def main():
             print(
                 JSON_PREFIX
                 + json.dumps(
-                    {"guess": file_info["name"], "episode": file_info["episode"], "match": match}
+                    {
+                        "guess": file_info["name"],
+                        "episode": file_info["episode"],
+                        "match": match,
+                        "season_hint": updater.season_hint(match, file_info["episode"]),
+                    }
                 )
             )
             return
