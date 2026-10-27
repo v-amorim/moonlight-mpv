@@ -45,9 +45,10 @@ Pick `here` if you'll keep editing the config.
 | ------------ | ---------------------------------------------------------------------- | ------------------------------------------------- |
 | mpv          | everything                                                             | nothing runs                                      |
 | ffmpeg       | `F4` subtitle index, subtitle export, chapter remux                    | those three fail silently at the moment you press |
-| Python 3.8+  | `just patch`, the AniList scripts, `first-run.py`                      | no uosc patch and no AniList                      |
+| Python 3.8+  | `just patch`, the AniList scripts, `SHIFT+y` subtitle search, `first-run.py` | no uosc patch, no AniList, no subtitle search |
 | [uv][uv]     | `just setup`, which vendors `requests` and `guessit`                   | `first-run.py` falls back to `pip`                |
 | [just][just] | the recipes below                                                      | run the command inside each recipe by hand        |
+| [alass][alass] | `y` subtitle sync; unzip the Windows release to `~/.local/opt/alass`  | `y` says it could not run                         |
 
 mpv has no official Windows binary; pick a build from [mpv.io/installation][mpv_install].
 
@@ -73,7 +74,7 @@ Anime4K shaders must sit in `shaders/Anime4K/`, the name `profiles.conf` and `CT
 
 ## Scripts I wrote
 
-Thirteen, the interface ones all on the Moonlight palette.
+Fifteen, the interface ones all on the Moonlight palette.
 
 ### [`keybind-visualizer.lua`][keybind_visualizer]
 
@@ -97,6 +98,24 @@ Fullscreen, clickable index of every subtitle line with timestamps, on `F4`. Typ
 | Every line of the track, the one playing highlighted | Filtered down to the lines that match         |
 | ---------------------------------------------------- | --------------------------------------------- |
 | ![Subtitle index][shot_sub_seek]                     | ![Subtitle index, searching][shot_sub_search] |
+
+### [`alass-sync.lua`][alass_sync]
+
+`y` (or `Subtitle > Sync to Audio`) retimes the selected subtitle file against the video's own audio with [alass][alass], then selects the result and zeroes `sub-delay`. Unlike a fixed delay, it also corrects a framerate mismatch (a 24 fps subtitle on a 23.976 fps video) and a scene one release has and the other lacks, so the end stays in sync and not only the start. Works on dubbed audio too, since a dub keeps the original's timing.
+
+It runs with split penalty 20 instead of alass's default 7: on dubbed audio the default invents minute-long jumps for whole blocks of lines. Tested against a known-good subtitle with a scene added or removed, 20 put every line back within 200 ms, where 7 still invented a jump.
+
+A cut of about a second is beyond it: no penalty splits for it, and the framerate guess can mistake the step for drift and spread the error over the whole file. If the lines slide off after a scene change by a second or so, a manual `sub-delay` from there is the fix.
+
+Subtitles that are not UTF-8 are passed as Windows-1252, the usual pt-BR alternative, since alass refuses anything else. The result goes to `%TEMP%\mpv-alass`; the original file is never touched. Subtitles inside the video need `F12` first. `script-opts/alass-sync.conf` can set `alass_dir` if alass lives elsewhere.
+
+### [`sub-find`][sub_find]
+
+`SHIFT+y` (or `Subtitle > Find Online`) lists subtitles for the playing file from opensubtitles.org's public site, with no account or API key. It searches by the file's OpenSubtitles hash, which only matches subtitles uploaded for this exact file, and by the IMDb id in the `.nfo` Jellyfin or Kodi leave next to the video. Hash matches come first and carry a check mark; the rest follow by how close the release name is to the file name, then by downloads.
+
+Without an `.nfo` it searches by title instead, read from the file name with the guessit that `just setup` vendors for AniList (a plain `S01E05` / `Title 1999` parse when it is missing). A fansub name with no season, such as `[SubsPlease] Sousou no Frieren - 05`, is searched as season 1. The menu opens with that guess as editable search text: `Enter` downloads the highlighted result, while typing and `Enter` searches again with the text, written `Title S05E12` for an episode or `Title 1999` for a film. A typed search wins over both the `.nfo` and the guess, which is how a name like `BTTH_NF_Episode-214` becomes `Battle Through the Heavens S05E12`. Hash matches stay on top whatever is typed, since they come from the file itself. The footnote under `?` says what was searched. When results come in more than one language, a `Language: All` row on top filters them: `Enter` on it cycles through the languages found, without searching again. Absolute numbering such as `One Piece - 1100` works when the site files the show the same way, as it does One Piece. Donghua rarely have pt-BR there, but several have English, so keep `eng` in `languages`.
+
+The picked one is saved next to the video as `<video>.pt-BR.srt` (a second one gets its subtitle id added, nothing is overwritten) and selected. A hash match is used as is; anything else goes through `alass-sync` in place, so a subtitle made for another release still lands in sync. [`sub_find.py`][sub_find_py] does the network and zip work with the standard library only. Languages and their order live in [`sub-find.conf`][sub_find_conf].
 
 ### [`uosc-menu.lua`][uosc_menu]
 
@@ -313,6 +332,11 @@ Shaders, [Anime4K][Anime4k] among them, are too large to commit; [`shaders_list.
 [keybind_visualizer_conf]: ./portable_config/script-opts/keybind-visualizer.conf
 [keybind_visualizer_layouts]: ./portable_config/script-opts/keybind-visualizer-layouts.json
 [sub_seek]: ./portable_config/scripts/sub-seek.lua
+[alass_sync]: ./portable_config/scripts/alass-sync.lua
+[alass]: https://github.com/kaegi/alass
+[sub_find]: ./portable_config/scripts/sub-find/main.lua
+[sub_find_py]: ./portable_config/scripts/sub-find/sub_find.py
+[sub_find_conf]: ./portable_config/script-opts/sub-find.conf
 [active_state]: ./portable_config/scripts/active-state.lua
 [Anime4k]: https://github.com/bloc97/Anime4K
 [UOSC]: https://github.com/tomasklaen/uosc
