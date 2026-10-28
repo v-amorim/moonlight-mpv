@@ -49,15 +49,18 @@ local C = {}
 for name, rgb in pairs({
 	bg = "0D0E17", -- #0D0E17  full-screen dim behind the list
 	panel = "141726", -- #141726  list panel background
-	border = "252A42", -- #252A42  list panel border
+	border = "242839", -- #242839  list panel hairline
 	text = "EEEEFA", -- #EEEEFA  row text + "Subtitles" header
 	dim = "9BA3C4", -- #9BA3C4  dimmed text (line count + footer hint)
-	time = "8A9BE0", -- #8A9BE0  timestamp column
-	cur = "7386D0", -- #7386D0  current line (under the playhead)
+	time = "9BA3C4", -- #9BA3C4  timestamp column, muted meta
+	cur = "A2B0EA", -- #A2B0EA  current line (under the playhead), primary-70
 	sel_bg = "252A42", -- #252A42  selected row background
 	hover_bg = "1C2033", -- #1C2033  hovered row background
 	scroll_trk = "1C2033", -- #1C2033  scrollbar track
-	scroll_thb = "8A9BE0", -- #8A9BE0  scrollbar thumb
+	scroll_thb = "2F3654", -- #2F3654  scrollbar thumb
+	placeholder = "7E86A4", -- #7E86A4  search field placeholder, on bg
+	key = "252A42", -- #252A42  keycap in the key hints
+	edge = "0D0E17", -- #0D0E17  keycap bottom edge
 	match = "A2B0EA", -- #A2B0EA  the typed words, picked out inside a row
 }) do
 	C[name] = to_ass(rgb)
@@ -69,6 +72,46 @@ end
 
 local function rect_draw(w, h)
 	return string.format("m 0 0 l %d 0 %d %d 0 %d", w, w, h, h)
+end
+
+-- Rounded rectangle with circular corners (bezier handles at 0.5523 of the radius); r = half the side draws a circle.
+local function rrect_draw(w, h, r)
+	r = math.min(r, w / 2, h / 2)
+	local k = r * 0.4477
+	return string.format(
+		"m %.1f 0 l %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f l %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f "
+			.. "l %.1f %.1f b %.1f %.1f 0 %.1f 0 %.1f l 0 %.1f b 0 %.1f %.1f 0 %.1f 0",
+		r, w - r, w - k, w, k, w, r,
+		w, h - r, w, h - k, w - k, h, w - r, h,
+		r, h, k, h, h - k, h - r,
+		r, k, k, r
+	)
+end
+
+local function chars(s)
+	return select(2, s:gsub("[^\128-\191]", ""))
+end
+
+-- Key hints: each key on a surface-3 keycap (4 px corners, a darker edge below), its action muted after it.
+-- The OSD font is JetBrains Mono: libass sizes it by its 1320-unit line, so a 600-unit character is 0.455 of the font size wide.
+local function key_hints(x, y, fs, s, hints)
+	local out, cx = {}, x
+	local cw, padx, kh = fs * 0.455, round(6 * s), round(fs * 1.5)
+	for _, hint in ipairs(hints) do
+		for key in hint[1]:gmatch("%S+") do
+			local w = round(chars(key) * cw + 2 * padx)
+			-- the darker edge is its own shape, not a shadow: osd-border-style=background-box turns a shadow into a square box
+			for _, part in ipairs({ { math.max(1, round(2 * s)), C.edge }, { 0, C.key } }) do
+				out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\p1}%s{\\p0}",
+					round(cx), y + part[1], part[2], rrect_draw(w, kh, round(4 * s)))
+			end
+			out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s", round(cx + padx), y, fs, C.text, key)
+			cx = cx + w + round(4 * s)
+		end
+		out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s", round(cx + 2 * s), y, fs, C.dim, hint[2])
+		cx = cx + chars(hint[2]) * cw + round(24 * s)
+	end
+	return table.concat(out, "\n")
 end
 
 -- escape user text so braces / backslashes are not read as ASS overrides
@@ -293,12 +336,15 @@ local function compute_geom()
 	local w, h = dim.w, dim.h
 	local mx = round(w * 0.06)
 	local my = round(h * 0.05)
+	-- Moonlight sizes are px at 1080 lines, scaled to the monitor rather than the window, so text in a window stays as readable as in fullscreen.
+	local s = (mp.get_property_number("display-height") or h) / 1080
 	local header_h = round(h * 0.06)
-	local footer_h = round(h * 0.04)
+	-- the key hints sit in a band inside the panel, under the list
+	local footer_h = math.max(28, round(44 * s))
 	local list_top = my + header_h + round(h * 0.012)
 	local list_bottom = h - my - footer_h
-	local row_h = math.max(16, round(h * 0.034))
-	local fs = math.max(10, round(row_h * 0.6))
+	local row_h = math.max(16, round(28 * s))
+	local fs = math.max(10, round(15 * s))
 	local visible = math.max(1, math.floor((list_bottom - list_top) / row_h))
 	local inner_x = mx + round(w * 0.012)
 	local inner_w = w - 2 * inner_x
@@ -311,11 +357,13 @@ local function compute_geom()
 		my = my,
 		header_y = my,
 		header_h = header_h,
-		footer_y = h - my - footer_h,
+		footer_y = list_top + visible * row_h,
+		footer_h = footer_h,
 		list_top = list_top,
 		list_bottom = list_top + visible * row_h,
 		row_h = row_h,
 		fs = fs,
+		s = s,
 		visible = visible,
 		inner_x = inner_x,
 		inner_w = inner_w,
@@ -480,34 +528,47 @@ local function render()
 
 	-- full-screen dim
 	a[#a + 1] =
-		string.format("{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\1a&H30&\\p1}%s{\\p0}", C.bg, rect_draw(g.w, g.h))
+		string.format("{\\an7\\pos(0,0)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H30&\\p1}%s{\\p0}", C.bg, rect_draw(g.w, g.h))
 	-- list panel background
+	local inset = round(12 * g.s)
 	a[#a + 1] = string.format(
-		"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H18&\\p1}%s{\\p0}",
+		"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H18&\\p1}%s{\\p0}",
 		g.mx,
-		g.list_top - round(g.row_h * 0.3),
+		g.list_top - inset,
 		C.border,
 		C.panel,
-		rect_draw(g.w - 2 * g.mx, (g.list_bottom - g.list_top) + round(g.row_h * 0.6))
+		rrect_draw(g.w - 2 * g.mx, (g.list_bottom - g.list_top) + inset + g.footer_h, round(16 * g.s))
 	)
 
 	-- header, with the query and how much of the track it leaves
-	local hfs = math.max(12, round(g.header_h * 0.55))
+	local hfs = math.max(12, round(24 * g.s))
 	local counts = (query ~= "") and string.format("%d of %d lines", #view, #subs)
 		or string.format("%d lines", #subs)
-	local typed = (query ~= "")
-			and string.format("{\\1c&H%s&}%s_", C.match, esc(query))
-		or string.format("{\\1c&H%s&}type to search", C.dim)
+	local cfs, mid = math.max(10, round(15 * g.s)), g.header_y + round(g.header_h / 2)
 	a[#a + 1] = string.format(
-		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\b1\\1c&H%s&}Subtitles{\\b0\\fs%d\\1c&H%s&}   %s   %s",
+		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\b1\\1c&H%s&}Subtitles{\\b0\\fs%d\\1c&H%s&}   %s",
 		g.inner_x,
-		g.header_y + round(g.header_h / 2),
+		mid,
 		hfs,
 		C.text,
-		round(hfs * 0.7),
+		cfs,
 		C.dim,
-		counts,
-		typed
+		counts
+	)
+	-- The query lives in an input field (an inset bg well, hairline, 8 px corners), so the placeholder never sits on bare video.
+	local fx = g.inner_x + round(chars("Subtitles") * hfs * 0.5 + (3 + chars(counts)) * cfs * 0.455 + 24 * g.s)
+	local fh, ffs = math.min(round(40 * g.s), g.header_h - 4), math.max(10, round(18 * g.s))
+	a[#a + 1] = string.format(
+		"{\\an4\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\p1}%s{\\p0}",
+		fx, mid, C.border, C.bg, rrect_draw(g.w - g.mx - fx, fh, round(8 * g.s))
+	)
+	a[#a + 1] = string.format(
+		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s",
+		fx + round(12 * g.s),
+		mid,
+		ffs,
+		query ~= "" and C.match or C.placeholder,
+		query ~= "" and esc(query) .. "_" or "Type to search"
 	)
 
 	-- rows
@@ -519,17 +580,18 @@ local function render()
 		local is_cur = (i == cur)
 		if is_sel or i == hovered then
 			a[#a + 1] = string.format(
-				"{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
-				g.mx + round(g.row_h * 0.15),
+				"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
+				g.mx + round(8 * g.s),
 				ry,
 				is_sel and C.sel_bg or C.hover_bg,
-				rect_draw(g.w - 2 * g.mx - round(g.row_h * 0.3), g.row_h)
+				-- Clear of the scrollbar on the right; 8 px corners nest in the panel's 16 px.
+				rrect_draw(g.w - 2 * g.mx - round(28 * g.s), g.row_h, round(8 * g.s))
 			)
 		end
 		local cy = ry + round(g.row_h / 2)
 		-- timestamp
 		a[#a + 1] = string.format(
-			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}%s",
+			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s",
 			g.inner_x,
 			cy,
 			g.fs,
@@ -538,17 +600,17 @@ local function render()
 		)
 		-- text, with the typed words picked out of it
 		a[#a + 1] = string.format(
-			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0}%s",
+			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&}%s",
 			g.inner_x + g.time_col_w,
 			cy,
 			g.fs,
-			highlight(utf8_sub(view[i].text, g.max_chars), is_cur and C.cur or C.text)
+			highlight(utf8_sub(view[i].text, g.max_chars), is_cur and C.cur or is_sel and C.match or C.text)
 		)
 	end
 
 	if #view == 0 then
 		a[#a + 1] = string.format(
-			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}No line matches that.",
+			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}No line matches that.",
 			g.inner_x,
 			g.list_top + round(g.row_h / 2),
 			g.fs,
@@ -558,56 +620,46 @@ local function render()
 
 	-- scrollbar (only when the list overflows)
 	if #view > g.visible then
-		local trk_x = g.w - g.mx + round(g.mx * 0.25)
+		-- 8 px wide, inside the panel's right edge.
+		local tw = math.max(4, round(8 * g.s))
+		local trk_x = g.w - g.mx - round(8 * g.s) - tw
 		local trk_y = g.list_top
 		local trk_h = g.list_bottom - g.list_top
-		local tw = math.max(4, round(g.mx * 0.18))
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H%s&\\1a&H40&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H40&\\p1}%s{\\p0}",
 			trk_x,
 			trk_y,
 			C.scroll_trk,
-			rect_draw(tw, trk_h)
+			rrect_draw(tw, trk_h, tw / 2)
 		)
 		local thb_h = math.max(round(g.row_h), round(trk_h * g.visible / #view))
 		local thb_y = trk_y + round((trk_h - thb_h) * (scroll - 1) / math.max(1, max_scroll() - 1))
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H%s&\\1a&H10&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H10&\\p1}%s{\\p0}",
 			trk_x,
 			thb_y,
 			C.scroll_thb,
-			rect_draw(tw, thb_h)
+			rrect_draw(tw, thb_h, tw / 2)
 		)
 	end
 
-	-- footer hint
-	a[#a + 1] = string.format(
-		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}Click a line to jump   "
-			.. "{\\1c&H%s&}Up/Down{\\1c&H%s&}+{\\1c&H%s&}Enter{\\1c&H%s&}   "
-			.. "Type to search, {\\1c&H%s&}BS{\\1c&H%s&} erases   {\\1c&H%s&}ESC{\\1c&H%s&} clears, then closes",
-		g.inner_x,
-		g.footer_y + round((g.h - g.footer_y - g.my) / 2),
-		math.max(11, round(g.row_h * 0.55)),
-		C.dim,
-		C.time,
-		C.dim,
-		C.time,
-		C.dim,
-		C.time,
-		C.dim,
-		C.time,
-		C.dim
-	)
+	a[#a + 1] = key_hints(g.inner_x, g.footer_y + round(g.footer_h / 2), math.max(10, round(13 * g.s)), g.s, {
+		{ "↑ ↓", "move" },
+		{ "Enter", "jump (or click a line)" },
+		{ "Type", "search" },
+		{ "Bksp", "erase" },
+		{ "Esc", "clear, then close" },
+	})
 
 	-- cursor dot (sits exactly under the real pointer when spaces are aligned)
 	if mouse_x then
 		local r = math.max(3, round(g.row_h * 0.12))
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord1\\3c&H000000&\\shad0\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord1\\3c&H170E0D&\\shad0\\4a&HFF&\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
 			round(mouse_x - r),
 			round(mouse_y - r),
 			C.cur,
-			rect_draw(r * 2, r * 2)
+			rrect_draw(r * 2, r * 2, r)
 		)
 	end
 

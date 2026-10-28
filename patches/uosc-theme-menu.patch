@@ -1,0 +1,253 @@
+--- a/portable_config/scripts/uosc/elements/Menu.lua
++++ b/portable_config/scripts/uosc/elements/Menu.lua
+@@ -1,4 +1,90 @@
+ local Element = require('elements/Element')
++
++-- Moonlight rows: the current item on surface-3 in primary-70, the cursor row on
++-- surface-2 (surface-4 when it is also the current item), muted icons and meta,
++-- and a hint that names a key drawn as keycaps.
++local moon = {
++	s2 = serialize_rgba('1C2033').color,
++	s3 = serialize_rgba('252A42').color,
++	s4 = serialize_rgba('2F3654').color,
++	bg = serialize_rgba('0D0E17').color,
++	p70 = serialize_rgba('A2B0EA').color,
++	muted = serialize_rgba('9BA3C4').color,
++	text = serialize_rgba('EEEEFA').color,
++	s1 = serialize_rgba('141726').color,
++	hairline = serialize_rgba('242839').color,
++}
++local KEY_NAMES = {
++	ENTER = 'Enter', ESC = 'Esc', SPACE = 'Space', TAB = 'Tab', BS = 'Bksp', DEL = 'Del', INS = 'Ins', HOME = 'Home',
++	END = 'End', PGUP = 'PgUp', PGDWN = 'PgDn', UP = '↑', DOWN = '↓', LEFT = '←', RIGHT = '→', MENU = 'Menu',
++	SHARP = '#', CTRL = 'Ctrl', ALT = 'Alt', SHIFT = 'Shift', META = 'Win',
++}
++
++-- "CTRL+o" -> {"Ctrl", "O"}; nil when the hint is not a key, such as a time or a count.
++local function key_parts(hint)
++	if not hint or hint == '' or hint:find('%s') then return nil end
++	local parts = {}
++	for part in (hint .. '+'):gmatch('(.-)%+') do parts[#parts + 1] = part end
++	if #parts == 0 or parts[#parts] == '' then return nil end
++	for i = 1, #parts - 1 do
++		if not ({CTRL = 1, ALT = 1, SHIFT = 1, META = 1})[parts[i]:upper()] then return nil end
++	end
++	local key = parts[#parts]
++	local is_key = #key == 1 or key:upper():match('^F%d%d?$') or key:upper():match('^KP%d$') or KEY_NAMES[key:upper()]
++	if not is_key then return nil end
++	for i, part in ipairs(parts) do
++		parts[i] = KEY_NAMES[part:upper()] or (#part == 1 and part:upper()) or part:upper():match('^KP(%d)$') and 'Num ' .. part:sub(3) or part
++	end
++	return parts
++end
++
++local KEYCAP_PAD, KEYCAP_GAP = 6, 4
++
++-- The Moonlight toast's shadow, 8 px down and blurred 14 px. Written by hand
++-- because ass:rect forces \blur0, which leaves a hard ledge on bright video.
++local function soft_shadow(ass, ax, ay, bx, by)
++	local s = state.scale
++	ass:new_event()
++	ass:append(string.format('{\\pos(0,0)\\rDefault\\an7\\bord0\\shad0\\blur%d\\1c&H000000&%s}',
++		round(14 * s), ass.opacity(nil, 0.62)))
++	ass:draw_start()
++	ass:round_rect_cw(ax, ay + round(8 * s), bx, by + round(8 * s), 12 * s)
++	ass:draw_stop()
++end
++
++-- The hovered entry's hint as a card above the timeline, away from the menu: the
++-- description, then its command muted on a line of its own. Sized to its text and
++-- read from the left, as the toast is; only the card itself sits centred.
++local function hint_caption(ass, text, size, small)
++	local s = state.scale
++	local desc, cmd = text:match('^(.-)%s+\xC2\xB7%s+(.+)$')
++	local lines = {{text = desc or text, size = size, color = moon.text}}
++	if cmd then lines[2] = {text = cmd, size = small, color = moon.muted} end
++	local pad, widest, height = round(14 * s), 0, 0
++	for _, line in ipairs(lines) do
++		widest = math.max(widest, text_width(line.text, {size = line.size}))
++		height = height + round(line.size * 1.4)
++	end
++	local w, h = widest + 2 * pad, height + 2 * pad
++	local ax = clamp(round(8 * s), round((display.width - w) / 2), display.width - w - round(8 * s))
++	local ay = display.height - round(150 * s)
++	soft_shadow(ass, ax, ay, ax + w, ay + h)
++	ass:rect(ax, ay, ax + w, ay + h, {
++		color = moon.s1, radius = 12 * s, border = math.max(1, round(s)), border_color = moon.hairline,
++	})
++	local y = ay + pad
++	for _, line in ipairs(lines) do
++		local lh = round(line.size * 1.4)
++		ass:txt(ax + pad, y + lh / 2, 4, ass_escape(line.text), {size = line.size, color = line.color})
++		y = y + lh
++	end
++end
++
++local function keycaps_width(parts, opts, scale)
++	local width = 0
++	for _, part in ipairs(parts) do width = width + text_width(part, opts) + 2 * KEYCAP_PAD * scale end
++	return width + (#parts - 1) * KEYCAP_GAP * scale
++end
+ 
+ ---@alias MenuAction {name: string; icon: string; label?: string; filter_hidden?: boolean;}
+ 
+@@ -322,7 +408,10 @@
+ 		for _, item in ipairs(menu.items) do
+ 			local icon_width = item.icon and self.font_size or 0
+ 			item.title_width = text_width(item.title, title_opts)
+-			item.hint_width = text_width(item.hint, hint_opts)
++			-- only the main menu's hints are keys; elsewhere a hint can be an index or a time
++			item.key_parts = self.type == 'main-menu' and key_parts(item.hint) or nil
++			item.hint_width = item.key_parts and keycaps_width(item.key_parts, hint_opts, state.scale)
++				or text_width(item.hint, hint_opts)
+ 			local spacings_in_item = 1 + (item.title_width > 0 and 1 or 0)
+ 				+ (item.hint_width > 0 and 1 or 0) + (icon_width > 0 and 1 or 0)
+ 			local estimated_width = item.title_width + item.hint_width + icon_width
+@@ -1573,7 +1662,7 @@
+ 			local next_item = menu.items[index + 1]
+ 			local next_is_active = next_item and next_item.active
+ 			local next_has_background = menu.selected_index == index + 1 or next_is_active
+-			local font_color = item.active and fgt or bgt
++			local font_color = item.active and moon.p70 or bgt
+ 			local actions = is_selected and (item.actions or menu.item_actions) -- not nil = actions are visible
+ 			local action = actions and actions[menu.action_index] -- not nil = action is selected
+ 
+@@ -1594,12 +1683,12 @@
+ 			end
+ 
+ 			-- Background
+-			local highlight_opacity = 0 + (item.active and 0.8 or 0) + (is_selected and 0.15 or 0)
+-			if highlight_opacity > 0 then
++			local highlight = item.active and (is_selected and moon.s4 or moon.s3) or (is_selected and moon.s2)
++			if highlight then
+ 				ass:rect(content_rect.ax, item_ay, content_rect.bx, item_by, {
+ 					radius = state.radius,
+-					color = fg,
+-					opacity = highlight_opacity * menu_opacity,
++					color = highlight,
++					opacity = menu_opacity,
+ 					clip = item_clip,
+ 				})
+ 			end
+@@ -1673,18 +1762,8 @@
+ 				title_clip_bx = actions_rect.ax - self.gap * 2
+ 			end
+ 
+-			-- Selected item indicator line
+-			if is_selected and not selected_action then
+-				local size = round(2 * state.scale)
+-				local v_padding = math.min(state.radius, math.ceil(self.item_height / 3))
+-				ass:rect(
+-					content_rect.ax - size - 1, item_ay + v_padding,
+-					content_rect.ax - 1, item_by - v_padding,
+-					{radius = 1 * state.scale, color = fg, opacity = menu_opacity, clip = item_clip}
+-				)
+-			end
+-
+ 			-- Icon
++			local icon_color = item.active and moon.p70 or moon.muted
+ 			if item.icon then
+ 				if not actions_rect or actions_rect.is_outside then
+ 					local x = (not item.title and not item.hint and item.align == 'center')
+@@ -1692,11 +1771,11 @@
+ 						or content_bx - (icon_size / 2)
+ 					if item.icon == 'spinner' then
+ 						ass:spinner(x, item_center_y, icon_size * 1.5, {
+-							color = font_color, opacity = menu_opacity * 0.8, clip = item_clip,
++							color = icon_color, opacity = menu_opacity * 0.8, clip = item_clip,
+ 						})
+ 					else
+ 						ass:icon(x, item_center_y, icon_size * 1.5, item.icon, {
+-							color = font_color, opacity = menu_opacity, clip = item_clip,
++							color = icon_color, opacity = menu_opacity, clip = item_clip,
+ 						})
+ 					end
+ 				end
+@@ -1724,13 +1803,35 @@
+ 				local clip = '\\clip(' .. title_clip_bx + self.item_padding .. ','
+ 					.. math.max(item_ay, content_rect.ay) .. ',' .. hint_clip_bx .. ','
+ 					.. math.min(item_by, content_rect.by) .. ')'
+-				ass:txt(content_bx, item_center_y, 6, item.ass_safe_hint, {
+-					size = self.font_size_hint,
+-					color = font_color,
+-					wrap = 2,
+-					opacity = 0.5 * menu_opacity,
+-					clip = clip,
+-				})
++				if item.key_parts then
++					-- keycaps, right to left: surface-3, 4 px corners, a bg lip 2 px below
++					local opts = {size = self.font_size_hint}
++					local h = round(self.font_size_hint * 1.45)
++					local ay, x = round(item_center_y - h / 2), content_bx
++					for i = #item.key_parts, 1, -1 do
++						local label = item.key_parts[i]
++						local w = text_width(label, opts) + 2 * KEYCAP_PAD * state.scale
++						local lip = round(2 * state.scale)
++						ass:rect(x - w, ay + lip, x, ay + h + lip, {
++							radius = 4 * state.scale, color = moon.bg, opacity = menu_opacity, clip = clip,
++						})
++						ass:rect(x - w, ay, x, ay + h, {
++							radius = 4 * state.scale, color = moon.s3, opacity = menu_opacity, clip = clip,
++						})
++						ass:txt(x - w / 2, item_center_y, 5, ass_escape(label), {
++							size = self.font_size_hint, color = bgt, opacity = menu_opacity, clip = clip,
++						})
++						x = x - w - KEYCAP_GAP * state.scale
++					end
++				else
++					ass:txt(content_bx, item_center_y, 6, item.ass_safe_hint, {
++						size = self.font_size_hint,
++						color = item.active and moon.p70 or moon.muted,
++						wrap = 2,
++						opacity = menu_opacity,
++						clip = clip,
++					})
++				end
+ 			end
+ 
+ 			-- Title
+@@ -1780,13 +1881,28 @@
+ 				color = fg, border = state.scale, border_color = bg, opacity = opacity,
+ 			})
+ 			if text then
+-				ass:txt(icon_x + self.font_size * 0.75, icon_y - self.font_size * 0.5, 7, ass_escape(text), {
++				-- the main menu's hint pill, wrapped at its " · " breaks to the menu's width
++				local opts, max_width = {size = self.font_size}, bg_rect.bx - bg_rect.ax
++				local lines, widest = {}, 0
++				for part in (text .. '  \xC2\xB7  '):gmatch('(.-)%s+\xC2\xB7%s+') do
++					local joined = lines[#lines] and lines[#lines] .. '  \xC2\xB7  ' .. part
++					if joined and text_width(joined, opts) <= max_width then
++						lines[#lines] = joined
++					else
++						lines[#lines + 1] = part
++					end
++				end
++				for i, line in ipairs(lines) do
++					widest = math.max(widest, text_width(line, opts))
++					lines[i] = ass_escape(line)
++				end
++				ass:tooltip(bg_rect, table.concat(lines, '\\N'), {
+ 					size = self.font_size,
+-					color = fg,
+-					border = state.scale,
+-					border_color = bg,
+-					opacity = menu_opacity,
+-					italic = true,
++					align = 2,
++					offset = self.font_size * 2,
++					margin = self.padding,
++					lines = #lines,
++					width_overwrite = widest,
+ 				})
+ 			end
+ 		end
+@@ -1929,6 +2045,9 @@
+ 		parent_menu = parent_menu.parent_menu
+ 	end
+ 
++	-- Local patch: hovered item's tooltip, last so no column paints over it
++	if tooltip_text then hint_caption(ass, tooltip_text, self.font_size, self.font_size_hint) end
++
+ 	return ass
+ end
+ 

@@ -7,7 +7,7 @@ My mpv setup: player settings, a keybind map, a [uosc][UOSC] theme, and the scri
 | ![mpv playing][shot_playing]        |
 
 > [!IMPORTANT]
-> Two things are deliberately missing: the **shaders**, too large to commit, and the **[uosc][UOSC] folder**, taken from upstream. uosc carries one local change kept in [`patches/`][patches_dir] rather than a fork: run `just patch` after installing or updating it, or the menu reverts to stock.
+> Two things are deliberately missing: the **shaders**, too large to commit, and the **[uosc][UOSC] folder**, taken from upstream. uosc carries three local changes kept in [`patches/`][patches_dir] rather than a fork: run `just patch` after installing or updating it, or the menu reverts to stock.
 
 ## The uosc theme
 
@@ -19,9 +19,15 @@ Moonlight: dark, low-contrast, thin, set in [`uosc.conf`][uosc_conf].
 
 `TAB` toggles the whole interface, `SHIFT+TAB` just the bottom bar. The timeline colours recognised ranges, so the OP, the ED and the preview read as bands rather than ticks.
 
-### The menu patch
+### The menu patches
 
-[`patches/uosc-cascade-menu.patch`][uosc_patch] makes uosc's menu behave like a native context menu: opens where you clicked, cascades by depth instead of centring and sliding, walks in and out on hover. The folder is gitignored, so [`patches/apply.py`][apply_py] reapplies it after every uosc update.
+- [`uosc-cascade-menu.patch`][uosc_patch] makes uosc's menu behave like a native context menu: opens where you clicked, cascades by depth instead of centring and sliding, walks in and out on hover.
+- [`uosc-search-breadcrumb.patch`][uosc_patch_search] makes menu search match the whole path, so "screenshot" finds Window under Screenshot.
+- [`uosc-theme-menu.patch`][uosc_patch_theme] draws rows in Moonlight: the current item on surface-3 in the light accent, the cursor row on surface-2, muted icons and hints, and a key hint in the main menu as keycaps. The hovered entry's description shows as a caption above the timeline, with its command muted under it.
+- [`uosc-radius-clamp.patch`][uosc_patch_radius] caps every rounded corner at half the shape's short side, so the 8 px Moonlight radius keeps small shapes such as the button badges round instead of folding them into notched boxes.
+- [`uosc-theme-topbar.patch`][uosc_patch_topbar] draws the top bar as one full-width surface-1 band with a soft shadow, holding a regular title, the file name under it when the two differ, and muted window buttons whose close turns red only on hover. The count and the chapter line are surface-3 chips led by their icons, so they read as the buttons they are: the count opens the playlist, the chapter line opens chapters. The bar publishes its bottom edge, so the toast and the Paused card sit below it.
+
+The folder is gitignored, so [`patches/apply.py`][apply_py] reapplies them after every uosc update.
 
 ## Install
 
@@ -121,8 +127,8 @@ The picked one is saved next to the video as `<video>.pt-BR.srt` (a second one g
 
 Builds uosc's menu from `input.conf`'s `#!` comments, adding icons and hover descriptions with two extra tokens; nothing in uosc itself is touched. Entries become checkboxes or radio groups automatically, re-read every time the menu opens.
 
-| Every entry with its icon and key | The hovered entry explained under the cascade |
-| --------------------------------- | --------------------------------------------- |
+| Every entry with its icon and key | The hovered entry explained above the timeline |
+| --------------------------------- | ---------------------------------------------- |
 | ![Menu root][shot_menu_root]      | ![Tools submenu][shot_menu_tools]             |
 
 | Fonts as a radio group               | The Anime4K presets, six levels deep  |
@@ -200,7 +206,11 @@ One shape and palette for every on-screen message, used by every script here ins
 
 ### [`pause-indicator.lua`][pause_indicator]
 
-A pause glyph in the top right, replacing [CogentRedTester's][crt] mid-screen version with one that matches the interface.
+A "Paused" card in the top right, in the toast's shape at three quarters of its size, replacing [CogentRedTester's][crt] glyph with one that matches the interface.
+
+### [`title-guard.lua`][title_guard]
+
+Keeps junk embedded titles off the top bar. Some releases put a site tag such as "BLUDV" in the title field; the embedded title shows only when it shares a word with the file name, otherwise the file name without its extension takes its place.
 
 ### [`skip-chapters.lua`][skip_chapters]
 
@@ -355,6 +365,7 @@ Shaders, [Anime4K][Anime4k] among them, are too large to commit; [`shaders_list.
 [clipshot]: ./portable_config/scripts/clipshot.lua
 [clipshot_src]: https://github.com/ObserverOfTime/mpv-scripts
 [pause_indicator]: ./portable_config/scripts/pause-indicator.lua
+[title_guard]: ./portable_config/scripts/title-guard.lua
 [crt]: https://github.com/CogentRedTester/mpv-scripts
 [vf_bypass]: ./portable_config/scripts/reactive_vf_bypass.lua
 [allecsc]: https://github.com/allecsc/mpv-qol-scripts
@@ -370,6 +381,10 @@ Shaders, [Anime4K][Anime4k] among them, are too large to commit; [`shaders_list.
 [mpv_install]: https://mpv.io/installation/
 [anilist_auth]: https://anilist.co/api/v2/oauth/authorize?client_id=20740&response_type=token
 [uosc_patch]: ./patches/uosc-cascade-menu.patch
+[uosc_patch_search]: ./patches/uosc-search-breadcrumb.patch
+[uosc_patch_theme]: ./patches/uosc-theme-menu.patch
+[uosc_patch_topbar]: ./patches/uosc-theme-topbar.patch
+[uosc_patch_radius]: ./patches/uosc-radius-clamp.patch
 [apply_py]: ./patches/apply.py
 [restart_mpv]: ./portable_config/scripts/restart-mpv.lua
 [skip_silence]: ./portable_config/scripts/skip-to-silence.lua

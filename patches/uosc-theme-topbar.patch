@@ -1,0 +1,275 @@
+--- a/portable_config/scripts/uosc/elements/TopBar.lua
++++ b/portable_config/scripts/uosc/elements/TopBar.lua
+@@ -1,4 +1,25 @@
+ local Element = require('elements/Element')
++
++-- Local patch: the Moonlight toast's shadow, 8 px down and blurred 14 px. Written
++-- by hand because ass:rect forces \blur0, which leaves a hard ledge on bright video.
++-- Local patch: the bar's drawn bottom edge, so the toast and the Paused card can sit
++-- below it; published only when it changes, since render runs on every pointer move.
++local published_bottom
++local function publish_bottom(value)
++	if value == published_bottom then return end
++	published_bottom = value
++	mp.set_property_native('user-data/moonlight/top_bar_bottom', value)
++end
++
++local function soft_shadow(ass, ax, ay, bx, by, opacity)
++	local s = state.scale
++	ass:new_event()
++	ass:append(string.format('{\\pos(0,0)\\rDefault\\an7\\bord0\\shad0\\blur%d\\1c&H000000&%s}',
++		round(14 * s), ass.opacity(nil, 0.62 * opacity)))
++	ass:draw_start()
++	ass:round_rect_cw(ax, ay + round(8 * s), bx, by + round(8 * s), 12 * s)
++	ass:draw_stop()
++end
+ 
+ ---@alias TopBarButtonProps {icon: string; hover_fg?: string; hover_bg?: string; command: (fun():string)}
+ 
+@@ -224,12 +245,21 @@
+ 
+ function TopBar:render()
+ 	local visibility = self:get_visibility()
+-	if visibility <= 0 then return end
++	if visibility <= 0 then return publish_bottom(0) end
+ 	local ass = assdraw.ass_new()
+ 	-- `by` might be artificially extended so people with low proximity options
+ 	-- can still click on chapter button, so we can't use it for rendering.
+ 	local ax, ay, bx, by = self.ax, self.ay, self.bx, self.ay + self.size
+ 	local margin = math.floor((self.size - self.font_size) / 4)
++
++	-- Local patch: the bar is one full-width surface-1 band at 85% with a soft shadow, so
++	-- the text drops its outline and calms down: regular title, muted upright chapter line.
++	local s1, s3, p70 = serialize_rgba('141726').color, serialize_rgba('252A42').color, serialize_rgba('A2B0EA').color
++	local muted = serialize_rgba('9BA3C4').color
++	-- The count and the chapter line are buttons: each is a surface-3 chip led by its icon.
++	local s4 = serialize_rgba('2F3654').color
++	local isz, gap = round(self.font_size * 0.95), round(8 * state.scale)
++	local ctrl_by
+ 
+ 	-- Window controls
+ 	if options.top_bar_controls then
+@@ -242,29 +272,25 @@
+ 			bx = button_ax
+ 		end
+ 
++		-- Local patch: muted icons on the band, a surface-3 chip on hover, and close only turns its icon red.
++		local err, s = serialize_rgba('CA5F71').color, state.scale
++		local bg_size = self.size - margin
++		ctrl_by = by + margin - math.max(round(2 * s), margin - round(6 * s))
++
+ 		for _, button in ipairs(self.buttons) do
+ 			local rect = {ax = button_ax, ay = ay, bx = button_ax + self.size, by = by}
+ 			local is_hover = get_point_to_rectangle_proximity(cursor, rect) <= 0
+-			local opacity = is_hover and 1 or config.opacity.controls
+-			local button_fg = is_hover and (button.hover_fg or bg) or fg
+-			local button_bg = is_hover and (button.hover_bg or fg) or bg
+ 
+ 			cursor:zone('primary_click', rect, button.command)
+ 
+-			local bg_size = self.size - margin
+ 			local bg_ax, bg_ay = rect.ax + (is_left and margin or 0), rect.ay + margin
+ 			local bg_bx, bg_by = bg_ax + bg_size, bg_ay + bg_size
+ 
+-			ass:rect(bg_ax, bg_ay, bg_bx, bg_by, {
+-				color = button_bg, opacity = visibility * opacity, radius = state.radius,
+-			})
+-
+-			ass:icon(bg_ax + bg_size / 2, bg_ay + bg_size / 2, bg_size * 0.5, button.icon, {
+-				color = button_fg,
+-				border_color = button_bg,
+-				opacity = visibility,
+-				border = options.text_border * state.scale,
+-			})
++			if is_hover then
++				ass:rect(bg_ax, bg_ay, bg_bx, bg_by, {color = s3, opacity = visibility, radius = 8 * s})
++			end
++			local icon_color = is_hover and (button.icon == 'close' and err or p70) or muted
++			ass:icon(bg_ax + bg_size / 2, bg_ay + bg_size / 2, bg_size * 0.5, button.icon, {color = icon_color, opacity = visibility})
+ 
+ 			button_ax = button_ax + self.size
+ 		end
+@@ -276,14 +302,16 @@
+ 		local padding = round(self.font_size / 2)
+ 		local left_aligned = options.top_bar_controls == 'left'
+ 		local title_ax, title_bx, title_ay = ax + margin, bx - margin, self.ay + margin
++		-- Local patch: where the count chip sits, so the chapter chip can stack under it
++		local card_ax, has_alt, pl_rect = title_ax, false, nil
+ 
+ 		-- Playlist position
+ 		if state.has_playlist then
+ 			local text = state.playlist_pos .. '' .. state.playlist_count
+-			local formatted_text = '{\\b1}' .. state.playlist_pos .. '{\\b0\\fs' .. self.font_size * 0.9 .. '}/'
+-				.. state.playlist_count
+-			local opts = {size = self.font_size, wrap = 2, color = fgt, opacity = visibility}
+-			local rect_width = round(text_width(text, opts) + padding * 2)
++			local formatted_text = state.playlist_pos .. '{\\1c&H' .. muted .. '&}/' .. state.playlist_count
++			local opts = {size = self.font_size, wrap = 2, color = p70, bold = false, opacity = visibility}
++			local lead = isz + gap
++			local rect_width = round(text_width(text, opts) + padding * 2 + lead)
+ 			local ax = left_aligned and title_bx - rect_width or title_ax
+ 			local rect = {
+ 				ax = ax,
+@@ -291,14 +319,14 @@
+ 				bx = ax + rect_width,
+ 				by = by - margin,
+ 			}
+-			local opacity = get_point_to_rectangle_proximity(cursor, rect) <= 0
+-				and 1 or config.opacity.playlist_position
+-			if opacity > 0 then
+-				ass:rect(rect.ax, rect.ay, rect.bx, rect.by, {
+-					color = fg, opacity = visibility * opacity, radius = state.radius,
+-				})
+-			end
+-			ass:txt(rect.ax + (rect.bx - rect.ax) / 2, rect.ay + (rect.by - rect.ay) / 2, 5, formatted_text, opts)
++			local hot = get_point_to_rectangle_proximity(cursor, rect) <= 0
++			ass:rect(rect.ax, rect.ay, rect.bx, rect.by, {
++				color = hot and s4 or s3, opacity = visibility, radius = state.radius,
++			})
++			local cy = rect.ay + (rect.by - rect.ay) / 2
++			ass:icon(rect.ax + padding + isz / 2, cy, isz, 'list_alt', {color = p70, opacity = visibility})
++			ass:txt(rect.ax + lead + (rect.bx - rect.ax - lead) / 2, cy, 5, formatted_text, opts)
++			pl_rect = rect
+ 			if left_aligned then title_bx = rect.ax - margin else title_ax = rect.bx + margin end
+ 
+ 			-- Click action
+@@ -313,9 +341,8 @@
+ 					size = self.font_size,
+ 					wrap = 2,
+ 					color = bgt,
++					bold = false,
+ 					opacity = visibility,
+-					border = options.text_border * state.scale,
+-					border_color = bg,
+ 					clip = string.format('\\clip(%d, %d, %d, %d)', self.ax, ay, title_bx, by),
+ 				}
+ 				local rect_ideal_width = round(text_width(main_title, opts) + padding * 2)
+@@ -342,10 +369,9 @@
+ 				local by = title_ay + self.alt_title_size
+ 				local opts = {
+ 					size = round(self.alt_title_size * 0.77),
++					bold = false,
+ 					wrap = 2,
+-					color = bgt,
+-					border = options.text_border * state.scale,
+-					border_color = bg,
++					color = muted,
+ 					opacity = visibility,
+ 				}
+ 				local rect_ideal_width = round(text_width(alt_title, opts) + padding * 2)
+@@ -358,15 +384,14 @@
+ 				})
+ 				local align = left_aligned and rect_ideal_width == rect_width and 6 or 4
+ 				local x = align == 6 and bx - padding or ax + padding
++				has_alt = true
+ 				ass:txt(x, title_ay + self.alt_title_size / 2, align, alt_title, opts)
+ 				title_ay = by + self.title_spacing
+ 			end
+ 
+ 			-- Current chapter
+ 			if self.current_chapter then
+-				local padding_half = round(padding / 2)
+-				local prefix, postfix = left_aligned and '' or '└ ', left_aligned and ' ┘' or ''
+-				local text = prefix .. self.current_chapter.index .. ': ' .. self.current_chapter.title .. postfix
++				local idx, total = self.current_chapter.index, #state.chapters
+ 				local next_chapter = state.chapters[self.current_chapter.index + 1]
+ 				local chapter_end = next_chapter and next_chapter.time or state.duration or 0
+ 				local remaining_time = ((state.time or 0) - chapter_end) /
+@@ -374,50 +399,37 @@
+ 				local remaining_human = format_time(remaining_time, math.abs(remaining_time))
+ 				local opts = {
+ 					size = round(self.chapter_size * 0.77),
+-					italic = true,
++					bold = false,
+ 					wrap = 2,
+-					color = bgt,
+-					border = options.text_border * state.scale,
+-					border_color = bg,
+-					opacity = visibility * 0.8,
++					color = muted,
++					opacity = visibility,
+ 				}
+-				local remaining_width = timestamp_width(remaining_human, opts)
+-				local remaining_box_width = remaining_width + padding_half * 2
+-
+-				-- Title
+-				local max_bx = title_bx - remaining_box_width - self.title_spacing
+-				local rect_ideal_width = round(text_width(text, opts) + padding * 2)
+-				local rect_width = math.min(rect_ideal_width, max_bx - title_ax)
+-				local ax = left_aligned and title_bx - rect_width or title_ax
+-				local rect = {
+-					ax = ax,
+-					ay = title_ay,
+-					bx = ax + rect_width,
+-					by = title_ay + self.chapter_size,
+-				}
+-				opts.clip = string.format('\\clip(%d, %d, %d, %d)', title_ax, title_ay, rect.bx, rect.by)
+-				ass:rect(rect.ax, rect.ay, rect.bx, rect.by, {
+-					color = bg, opacity = visibility * config.opacity.title, radius = state.radius,
+-				})
+-				local align = left_aligned and rect_ideal_width == rect_width and 6 or 4
+-				local x = align == 6 and rect.bx - padding or rect.ax + padding
+-				ass:txt(x, rect.ay + self.chapter_size / 2, align, text, opts)
+-
+-				-- Time
+-				local time_ax = left_aligned
+-					and rect.ax - self.title_spacing - remaining_box_width or rect.bx + self.title_spacing
+-				local time_bx = time_ax + remaining_box_width
+-				opts.clip = nil
+-				ass:rect(time_ax, rect.ay, time_bx, rect.by, {
+-					color = bg, opacity = visibility * config.opacity.title, radius = state.radius,
+-				})
+-				ass:txt(time_ax + padding_half, rect.ay + self.chapter_size / 2, 4, remaining_human, opts)
+-
+-				-- Click action
+-				rect.bx = time_bx
++				local lead = isz + gap
++
++				-- Local patch: a "1/5" chip right under the playlist count, as wide and as tall as it,
++				-- so the two read as one column of buttons. The chapter's name and time left follow
++				-- in the titles' column on the chip's row; when the file name line holds that row,
++				-- they are left out rather than adding a third row.
++				local col_ax = pl_rect and pl_rect.ax or card_ax
++				local row_ay = pl_rect and pl_rect.by + self.title_spacing or title_ay
++				local height = pl_rect and pl_rect.by - pl_rect.ay or self.size - 2 * margin
++				local copts = {size = opts.size, bold = false, color = p70, opacity = visibility}
++				-- measured the way the count measures itself, digits without the slash, so the two line up
++				local width = round(text_width(idx .. '' .. total, copts) + padding * 2 + lead)
++				if pl_rect then width = math.max(width, pl_rect.bx - pl_rect.ax) end
++				local rect = {ax = col_ax, ay = row_ay, bx = col_ax + width, by = row_ay + height}
++				local hot = get_point_to_rectangle_proximity(cursor, rect) <= 0
++				ass:rect(rect.ax, rect.ay, rect.bx, rect.by, {color = hot and s4 or s3, opacity = visibility, radius = state.radius})
++				local cy = rect.ay + height / 2
++				ass:icon(rect.ax + padding + isz / 2, cy, isz * 0.9, 'bookmark', {color = p70, opacity = visibility})
++				ass:txt(rect.ax + lead + (rect.bx - rect.ax - lead) / 2, cy, 5, idx .. '{\\1c&H' .. muted .. '&}/' .. total, copts)
+ 				cursor:zone('primary_click', rect, function() mp.command('script-binding uosc/chapters') end)
+-
+-				title_ay = rect.by + self.title_spacing
++				if not (has_alt and pl_rect) then
++					local nx = (pl_rect and title_ax or rect.bx + gap) + padding
++					opts.clip = string.format('\\clip(%d, %d, %d, %d)', nx, rect.ay, title_bx, rect.by)
++					ass:txt(nx, cy, 4, ass_escape(self.current_chapter.title) .. '   ' .. remaining_human, opts)
++				end
++				title_ay = math.max(title_ay, rect.by + self.title_spacing)
+ 			end
+ 		end
+ 		self.title_by = title_ay - 1
+@@ -425,7 +437,17 @@
+ 		self.title_by = ay
+ 	end
+ 
+-	return ass
++	-- Local patch: the band is drawn last but has to sit under everything above
++	local s = state.scale
++	local bar_by = math.max(math.max(self.title_by, self.ay + self.size) + round(6 * s), ctrl_by or 0)
++	local back = assdraw.ass_new()
++	soft_shadow(back, self.ax, self.ay - round(12 * s), self.bx, bar_by, visibility)
++	back:rect(self.ax, self.ay, self.bx, bar_by, {color = s1, opacity = visibility * 0.85})
++	publish_bottom(bar_by)
++	-- merge only concatenates, so without a fresh line the first event above joins the backing's last one
++	back:new_event()
++	back:merge(ass)
++	return back
+ end
+ 
+ return TopBar

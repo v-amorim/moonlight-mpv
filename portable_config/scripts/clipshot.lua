@@ -49,7 +49,12 @@ local function clipshot(arg)
 	return function()
 		mp.commandv("screenshot-to-file", file, arg)
 		mp.command_native_async({ "run", unpack(cmd) }, function(suc, _, err)
-			mp.osd_message(suc and "Copied screenshot to clipboard" or err, 1)
+			-- Through osd_theme, so the message draws like every other one in this config.
+			if suc then
+				mp.commandv("script-message-to", "osd_theme", "say", "Screenshot", "copied", "to the clipboard")
+			else
+				mp.commandv("script-message-to", "osd_theme", "say", "Screenshot not copied", "", err or "")
+			end
 		end)
 	end
 end

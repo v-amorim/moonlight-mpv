@@ -10,20 +10,21 @@ it. Author the per-step stages below the marker.
 
 from __future__ import annotations
 
-import getpass
+import contextlib
+import json
 import os
 import platform
+import re
 import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import webbrowser
 from pathlib import Path
 
-# ──────────────────────────────────────────────────────────────────────────
-# Wizard library: delightful, consistent UX. Identical across every wizard.
-# ──────────────────────────────────────────────────────────────────────────
+# Wizard library: identical across every wizard, never hand-edited.
 
 # Author sets this at the top of the stages section.
 TOTAL_STAGES = 0
@@ -35,6 +36,7 @@ _written_env: list[str] = []  # KEYs written to ENV_FILE this run
 _written_secret: list[str] = []  # secret NAMEs set this run
 _skipped: list[str] = []  # things we couldn't do (e.g. gh missing)
 _chosen: list[tuple[str, str]] = []  # label and answer, redrawn on every stage
+_found: list[tuple[str, str, bool]] = []  # label, value and whether it is fine: what stages detected, for the receipt
 
 
 class Back(Exception):  # noqa: N818  a control signal, not a failure
@@ -55,7 +57,7 @@ def _enable_ansi() -> bool:
             if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                 return False
             return bool(kernel32.SetConsoleMode(handle, mode.value | 0x4))
-        except Exception:
+        except (OSError, AttributeError):
             return False
     return True
 
@@ -67,18 +69,57 @@ def _c(code: str) -> str:
     return code if _ANSI else ""
 
 
-def _rgb(hexcode: str) -> str:
-    red, green, blue = (int(hexcode[at : at + 2], 16) for at in (1, 3, 5))
+# Moonlight, the theme the Claude Code mods draw with.
+THEME = {
+    "bg": "#0D0E17",
+    "surface1": "#141726",
+    "surface2": "#1C2033",
+    "surface3": "#252A42",
+    "surface4": "#2F3654",
+    "border": "#242839",
+    "separator": "#3B446A",
+    "onSurface": "#EEEEFA",
+    "muted": "#9BA3C4",
+    "dim": "#7E86A4",
+    "accent": "#7386D0",
+    "primary70": "#A2B0EA",
+    "secondary": "#B9C6F5",
+    "good": "#49EF95",
+    "alert": "#CA5F71",
+    "warn": "#FFCB6B",
+    "link": "#8A9BE0",
+}
+
+
+def _channels(hexcode: str) -> list[int]:
+    return [int(hexcode[at : at + 2], 16) for at in (1, 3, 5)]
+
+
+def mix(start: str, end: str, share: float) -> str:
+    """The color `share` of the way from `start` to `end`, both #RRGGBB."""
+    ends = _channels(end)
+    return "#" + "".join(
+        f"{round(value + (ends[at] - value) * share):02x}" for at, value in enumerate(_channels(start))
+    )
+
+
+def _fg(hexcode: str) -> str:
+    red, green, blue = _channels(hexcode)
     return _c(f"\033[38;2;{red};{green};{blue}m")
 
 
-# Moonlight: the palette the rest of this config is themed on.
-TEXT = _rgb("#EEEEFA")
-ACCENT = _rgb("#7386D0")
-MUTED = _rgb("#9BA3C4")
-GOOD = _rgb("#49EF95")
-ALERT = _rgb("#CA5F71")
-LINK = _rgb("#8A9BE0")
+def _bg(hexcode: str) -> str:
+    red, green, blue = _channels(hexcode)
+    return _c(f"\033[48;2;{red};{green};{blue}m")
+
+
+TEXT = _fg(THEME["onSurface"])
+ACCENT = _fg(THEME["accent"])
+MUTED = _fg(THEME["muted"])
+DIM = _fg(THEME["dim"])
+GOOD = _fg(THEME["good"])
+ALERT = _fg(THEME["alert"])
+LINK = _fg(THEME["link"])
 
 BOLD = _c("\033[1m")
 RESET = _c("\033[0m")
@@ -87,26 +128,412 @@ RESET = _c("\033[0m")
 def _encodable(text: str) -> bool:
     try:
         text.encode(sys.stdout.encoding or "ascii")
-        return True
     except (UnicodeEncodeError, LookupError):
         return False
+    return True
 
 
-try:  # legacy Windows code pages can't render the glyphs below
+# Legacy Windows code pages can't render the glyphs below; a replaced stdout has no reconfigure.
+with contextlib.suppress(AttributeError, OSError, ValueError):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-except Exception:
-    pass
 
-_FANCY = _encodable("▸·✓⚠↗•❯")  # noqa: RUF001  the glyphs are deliberate
-ARROW = "❯" if _FANCY else ">"  # noqa: RUF001  a pointer, not a quote mark
-STAGE_MARK = "▸" if _FANCY else ">"
-SEP = "·" if _FANCY else "-"
-OK_MARK = "✓" if _FANCY else "+"
-WARN_MARK = "⚠" if _FANCY else "!"
-OPEN_MARK = "↗" if _FANCY else "->"
-BULLET = "•" if _FANCY else "*"
-TO = "→" if _FANCY else "->"
+_FANCY = _encodable("▸·✓↗•❯─│╭╮╰╯◉○…↑↓←")
+
+
+# Nerd Font detection, ported from the mods: read the font the terminal is set to.
+def is_nerd_name(face: str) -> bool:
+    """Matches "Fira Code Nerd Font Mono" and the patched suffixes NF, NFM and NFP."""
+    return bool(re.search(r"nerd|\bNFM?\b", face, re.IGNORECASE) or re.search(r"NF[MP]?(?![A-Za-z])", face))
+
+
+def is_nerd_face(settings_text: str) -> bool:
+    """Windows Terminal: any profile whose "face" is a Nerd Font."""
+    return any(is_nerd_name(face) for face in re.findall(r'"face"\s*:\s*"([^"]*)"', settings_text))
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _run(argv: list[str]) -> str:
+    """Stdout of a command that exits 0, else empty."""
+    if not shutil.which(argv[0]):
+        return ""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _is_windows_terminal(env: dict) -> bool:
+    # mintty inherits WT_SESSION from a Windows Terminal tab, so only an unset or Windows Terminal TERM_PROGRAM counts.
+    program = env.get("TERM_PROGRAM", "")
+    return bool(env.get("WT_SESSION")) and (
+        not program or bool(re.search(r"windows\s*terminal", program, re.IGNORECASE))
+    )
+
+
+def _iterm_face(env: dict, home: Path) -> str | None:
+    plist = str(home / "Library/Preferences/com.googlecode.iterm2.plist")
+    try:
+        profiles = json.loads(_run(["plutil", "-extract", "New Bookmarks", "json", "-o", "-", plist]) or "[]")
+    except ValueError:
+        return None
+    named = [profile for profile in profiles if profile.get("Name") == env.get("ITERM_PROFILE")]
+    if named:
+        return named[0].get("Normal Font")
+    guid = _run(["plutil", "-extract", "Default Bookmark Guid", "raw", "-o", "-", plist]).strip()
+    return next((profile.get("Normal Font") for profile in profiles if profile.get("Guid") == guid), None)
+
+
+def _gnome_face() -> str | None:
+    def unquote(text: str) -> str:
+        return text.strip().strip("'")
+
+    profile = unquote(_run(["gsettings", "get", "org.gnome.Terminal.ProfilesList", "default"]))
+    if not profile:
+        return None
+    schema = f"org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{profile}/"
+    if unquote(_run(["gsettings", "get", schema, "use-system-font"])) == "true":
+        return None
+    return unquote(_run(["gsettings", "get", schema, "font"])) or None
+
+
+def _konsole_face(home: Path) -> str | None:
+    profile = re.search(r"^DefaultProfile=(.+)$", _read(home / ".config/konsolerc"), re.MULTILINE)
+    if not profile:
+        return None
+    font = re.search(r"^Font=([^,\n]+)", _read(home / ".local/share/konsole" / profile.group(1).strip()), re.MULTILINE)
+    return font.group(1) if font else None
+
+
+def _terminal_face(env: dict, home: Path, roaming: Path) -> str | None:
+    program = env.get("TERM_PROGRAM", "")
+    if program == "iTerm.app":
+        return _iterm_face(env, home)
+    if env.get("GNOME_TERMINAL_SCREEN"):
+        return _gnome_face()
+    if env.get("KONSOLE_VERSION"):
+        return _konsole_face(home)
+    # Terminals whose font sits in a text config: the first file naming a font wins, then its first pattern.
+    configs = [
+        (
+            program == "vscode",
+            [
+                home / "Library/Application Support/Code/User/settings.json",
+                home / ".config/Code/User/settings.json",
+                roaming / "Code/User/settings.json",
+            ],
+            [r'"terminal\.integrated\.fontFamily"\s*:\s*"([^"]*)"', r'"editor\.fontFamily"\s*:\s*"([^"]*)"'],
+        ),
+        (
+            program == "ghostty",
+            [home / ".config/ghostty/config", home / "Library/Application Support/com.mitchellh.ghostty/config"],
+            [r'^\s*font-family\s*=\s*"?([^"\n#]+)'],
+        ),
+        (bool(env.get("KITTY_WINDOW_ID")), [home / ".config/kitty/kitty.conf"], [r"^\s*font_family\s+(.+)$"]),
+        (
+            program == "WezTerm",
+            [home / ".wezterm.lua", home / ".config/wezterm/wezterm.lua"],
+            [r"""wezterm\.font(?:_with_fallback)?\(\s*\{?\s*["']([^"']+)["']"""],
+        ),
+        (
+            bool(env.get("ALACRITTY_WINDOW_ID")),
+            [home / ".config/alacritty/alacritty.toml"],
+            [r'\[font\.normal\][^[]*?family\s*=\s*"([^"]+)"'],
+        ),
+    ]
+    for matches, files, patterns in configs:
+        if not matches:
+            continue
+        for path in files:
+            text = _read(path)
+            for pattern in patterns:
+                found = re.search(pattern, text, re.MULTILINE)
+                if found:
+                    return found.group(1)
+        return None
+    return None
+
+
+def detect_nerd(env: dict | None = None, home: Path | None = None) -> bool:
+    """True only when the terminal this runs in names a Nerd Font; an unknown terminal stays safe."""
+    env = dict(os.environ) if env is None else env
+    home = Path.home() if home is None else home
+    local = Path(env.get("LOCALAPPDATA") or home / "AppData/Local")
+    if _is_windows_terminal(env):
+        settings = [
+            local / "Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json",
+            local / "Microsoft/Windows Terminal/settings.json",
+        ]
+        return any(is_nerd_face(_read(path)) for path in settings)
+    face = _terminal_face(env, home, Path(env.get("APPDATA") or home / "AppData/Roaming"))
+    return face is not None and is_nerd_name(face)
+
+
+def icon_mode(env: dict | None = None) -> tuple[str, str]:
+    """("nerd" or "safe", why), with WIZARD_ICONS=nerd|safe forcing one."""
+    env = dict(os.environ) if env is None else env
+    forced = env.get("WIZARD_ICONS", "").strip().lower()
+    if forced in ("nerd", "safe"):
+        return forced, "set by WIZARD_ICONS"
+    if detect_nerd(env):
+        return "nerd", "your terminal font is a Nerd Font"
+    return "safe", "no Nerd Font found in your terminal's settings"
+
+
+ICON_MODE, ICON_REASON = icon_mode()
+NERD = _ANSI and _FANCY and ICON_MODE == "nerd"
+
+_ASCII_GLYPHS = {
+    "stage": ">",
+    "cursor": ">",
+    "sep": "-",
+    "ok": "+",
+    "warn": "!",
+    "open": "->",
+    "bullet": "*",
+    "to": "->",
+    "on": "[x]",
+    "off": "[ ]",
+    "rule": "-",
+    "more": "~",
+    "updown": "up/down",
+    "left": "left",
+}
+_SAFE_GLYPHS = {
+    "stage": "▸",
+    "cursor": "❯",
+    "sep": "·",
+    "ok": "✓",
+    "warn": "!",
+    "open": "↗",
+    "bullet": "•",
+    "to": "→",
+    "on": "[◉]",
+    "off": "[○]",
+    "rule": "─",
+    "more": "…",
+    "updown": "↑↓",
+    "left": "←",
+}
+# Nerd glyphs as escapes: editors drop private-use characters typed into a file. Toggles pad to the same three cells.
+_NERD_GLYPHS = {
+    **_SAFE_GLYPHS,
+    "stage": "\uf054",
+    "ok": "\ueab2",
+    "warn": "\uea6c",
+    "on": " \uf14a ",
+    "off": " \uf096 ",
+}
+GLYPH = _NERD_GLYPHS if NERD else _SAFE_GLYPHS if _FANCY else _ASCII_GLYPHS
+
+# Icons a stage or card may name; drawn in Nerd mode only.
+ICONS = {
+    "stage": "\uf054",
+    "settings": "\uf1de",
+    "actions": "\uf0e7",
+    "features": "\uf005",
+    "mod": "\uf12e",
+    "installed": "\uf487",
+    "files": "\ueb86",
+    "tool": "\uf0ad",
+    "shell": "\uf120",
+    "web": "\uf0ac",
+    "key": "\uf084",
+    "font": "\uf031",
+    "receipt": "\uf0ae",
+    "done": "\ueab2",
+    "warn": "\uea6c",
+}
+
+ARROW = GLYPH["cursor"]
+STAGE_MARK = GLYPH["stage"]
+SEP = GLYPH["sep"]
+OK_MARK = GLYPH["ok"]
+WARN_MARK = GLYPH["warn"]
+OPEN_MARK = GLYPH["open"]
+BULLET = GLYPH["bullet"]
+TO = GLYPH["to"]
 MASK = "*"  # echoed per character of a secret, so a paste is visibly the right length
+
+_CAPS = ("\ue0b6", "\ue0b4")  # a pill's rounded ends, drawn only in Nerd mode
+_BOX = "╭╮╰╯─│" if _FANCY else "++++-|"
+_SGR = re.compile(r"(\x1b\[[0-9;?]*[A-Za-z])")
+
+
+def _width(text: str) -> int:
+    """Cells on screen: every glyph here takes one, escapes take none."""
+    return len(_SGR.sub("", text))
+
+
+def _fit(text: str, width: int) -> str:
+    """Cut text to width cells, ending in an ellipsis, keeping its escapes intact."""
+    if _width(text) <= width:
+        return text
+    out: list[str] = []
+    seen = 0
+    for position, part in enumerate(_SGR.split(text)):
+        if position % 2:
+            out.append(part)
+            continue
+        room = width - 1 - seen
+        if len(part) > room:
+            out.append(part[: max(room, 0)] + GLYPH["more"])
+            break
+        out.append(part)
+        seen += len(part)
+    return "".join(out) + RESET
+
+
+def _wrap(line: str, width: int) -> list[str]:
+    """Wrap on spaces to width cells, reopening the styles a line break cut off.
+
+    A bulleted line hangs its later rows under the text; a word wider than a row is split, so a path is never cut.
+    """
+    if _width(line) <= width:
+        return [line]
+    hang = " " * (_width(BULLET) + 1) if _SGR.sub("", line).startswith(f"{BULLET} ") else ""
+    room = width - len(hang)
+    words: list[str] = []
+    for word in line.split(" "):
+        while _width(word) > room and not _SGR.search(word):
+            # after the last path separator that fits, so a file name stays whole
+            cut = max(word.rfind("/", 0, room), word.rfind("\\", 0, room)) + 1 or room
+            words.append(word[:cut])
+            word = word[cut:]
+        words.append(word)
+    rows: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}" if current else word
+        if current and _width(candidate) > width:
+            rows.append(current + RESET)
+            codes = _SGR.findall(current)
+            if RESET in codes:
+                codes = codes[len(codes) - codes[::-1].index(RESET) :]
+            candidate = "".join(codes) + hang + word
+        current = candidate
+    rows.append(current)
+    return rows
+
+
+def _pill(text: str, body: str, ink: str, *, under: str | None, bold: bool = False) -> str:
+    """A rounded chip of `body` with `ink` text; `under` is the fill around its caps, None the terminal's own."""
+    weight = BOLD if bold else ""
+    if not _ANSI:
+        return f"[{text}]"
+    if not NERD:
+        return f"{_bg(body)}{_fg(ink)}{weight} {text} {RESET}"
+    around = _bg(under) if under else _c("\033[49m")
+    cap = _fg(body)
+    return f"{around}{cap}{_CAPS[0]}{_bg(body)}{_fg(ink)}{weight}{text}{RESET}{around}{cap}{_CAPS[1]}{RESET}"
+
+
+def subpill(text: str, *, fill: str | None = THEME["surface3"]) -> str:
+    """The active part of a control: a surface4 subpill in primary-70, set on `fill` (None is the terminal's own)."""
+    return _pill(text, THEME["surface4"], THEME["primary70"], under=fill, bold=True)
+
+
+def keycap(text: str, *, lit: bool = False, dead: bool = False) -> str:
+    """A key hint's key: a surface3 pill in secondary; lit (hovered) it is surface4 in accent.
+
+    Dead (not live yet) it is surface2 in dim.
+    """
+    if dead:
+        return _pill(text, THEME["surface2"], THEME["dim"], under=None)
+    if lit:
+        return _pill(text, THEME["surface4"], THEME["accent"], under=None)
+    return _pill(text, THEME["surface3"], THEME["secondary"], under=None)
+
+
+def _keys(*pairs: tuple[str, str, str], hot: str = "", dead: str = "") -> tuple[str, list[tuple[int, int, str]]]:
+    """The key legend: each (label, action, key) as a chip and its action, plus the cells each takes for clicks.
+
+    The chip whose key is `hot` (the one under the pointer) draws lit, its action in full text color.
+    The chip whose key is `dead` does nothing yet, so it and its action draw dim.
+    """
+    parts: list[str] = []
+    spans: list[tuple[int, int, str]] = []
+    column = 0
+    joint = f" {_fg(THEME['separator'])}{_BOX[5]}{RESET} "
+    for label, action, press in pairs:
+        lit = bool(press) and press == hot
+        off = bool(press) and press == dead
+        ink = DIM if off else TEXT if lit else MUTED
+        part = f"{keycap(label, lit=lit, dead=off)} {ink}{action}{RESET}"
+        spans.append((column, column + _width(part), press))
+        parts.append(part)
+        column += _width(part) + _width(joint)
+    return joint.join(parts), spans
+
+
+def _card_width() -> int:
+    return max(24, min(shutil.get_terminal_size((80, 24)).columns - 4, 80))
+
+
+def card(
+    title: str,
+    lines: list[str] | tuple[str, ...] = (),
+    *,
+    icon: str | None = None,
+    hue: str = THEME["accent"],
+    edge_hue: str | None = None,
+) -> None:
+    """A round-bordered card, its title set into the top edge and its fill tinted toward hue."""
+    _flush()
+    width = _card_width()
+    inner = width - 4
+    fill = mix(THEME["surface1"], hue, 0.06)
+    paint = _bg(fill)
+    edge = _fg(edge_hue or THEME["border"])
+    top_left, top_right, bottom_left, bottom_right, flat, side = _BOX
+    rows = []
+    for line in lines:
+        rows.extend(_wrap(line, inner))
+    if title:
+        glyph = ICONS.get(icon or "", icon or "") if NERD else ""
+        lead = f"{_fg(hue)}{glyph}{RESET} " if glyph else ""
+        label = _fit(f"{lead}{BOLD}{TEXT}{title}{RESET}", width - 8)
+        run = flat * (width - 5 - _width(label))
+        print(f"  {edge}{top_left}{flat} {RESET}{label}{RESET}{edge} {run}{top_right}{RESET}")
+    else:
+        print(f"  {edge}{top_left}{flat * (width - 2)}{top_right}{RESET}")
+    for row in rows:
+        body = _fit(row, inner)
+        pad = " " * (inner - _width(body))
+        if paint:
+            body = body.replace(RESET, RESET + paint)
+        print(f"  {edge}{side}{RESET}{paint} {body}{pad} {RESET}{edge}{side}{RESET}")
+    print(f"  {edge}{bottom_left}{flat * (width - 2)}{bottom_right}{RESET}")
+
+
+# A stage's lines are held, then drawn as one small card per kind before the next prompt: what it checks, then what needs a change.
+_held: list[tuple[str, list[str]]] = []
+_in_stage = False
+
+
+def _hold(kind: str, text: str) -> None:
+    if _held and _held[-1][0] == kind:
+        _held[-1][1].append(text)
+    else:
+        _held.append((kind, [text]))
+
+
+def _flush() -> None:
+    """Draw the held lines as their cards, a blank row after each."""
+    groups = list(_held)
+    _held.clear()
+    for kind, lines in groups:
+        if kind == "warn":
+            card("Needs a change", lines, hue=THEME["alert"], edge_hue=mix(THEME["bg"], THEME["alert"], 0.33))
+        else:
+            card("Check", lines)
+        print()
 
 
 def _clear() -> None:
@@ -126,29 +553,56 @@ def _clear() -> None:
     sys.stdout.flush()
 
 
-def banner(title: str) -> None:
-    """Opening frame: what this wizard does."""
+_INTRO = [
+    "You drive the browser; this wizard tells you exactly what to do and captures the values you copy back.",
+    (
+        "Every answer is repeated at the top of each later stage, and each screen lists its keys at the bottom. "
+        "Ctrl-C stops, though nothing already written is undone."
+    ),
+    "Earlier stages stay in the scrollback.",
+]
+
+
+def banner(title: str, intro: list[str] | None = None) -> None:
+    """Opening card: what this wizard does, how to drive it, which icons it draws."""
     _clear()
-    print(f"\n{BOLD}{ACCENT}  {title}{RESET}")
-    print(f"{MUTED}  {TOTAL_STAGES} stages{RESET}\n")
-    print(f"{MUTED}  You drive the browser; this wizard tells you exactly what to do and")
-    print("  captures the values you copy back. Arrow keys pick from a list, and every")
-    print("  answer is repeated at the top of each later stage. Left or `b` steps back")
-    print("  one stage. Ctrl-C stops, though nothing already written is undone.")
-    print(f"  Earlier stages stay in the scrollback.{RESET}")
-    pause("Ready to start?")
+    print()
+    lines = [f"{MUTED}{TOTAL_STAGES} stages{RESET}", "", *(intro or _INTRO), ""]
+    lines.append(f"{MUTED}Icons: {ICON_MODE}, {ICON_REASON}. WIZARD_ICONS=nerd or safe forces one.{RESET}")
+    card(title, lines, icon="stage")
+    pause("Let's start?")
 
 
-def stage(name: str) -> None:
+def stage(name: str, icon: str | None = None) -> None:
     """Announce a stage at the top of the screen, above what was chosen so far."""
-    global _stage_index
+    global _stage_index, _in_stage
+    _flush()
+    _in_stage = True
     _clear()
     _stage_index += 1
-    print(
-        f"\n{BOLD}{ACCENT}{STAGE_MARK} Stage {_stage_index}/{TOTAL_STAGES} "
-        f"{SEP} {name}{RESET}"
-    )
+    count = f"{_stage_index}/{TOTAL_STAGES}"
+    if _ANSI:
+        _section(name, count, icon or "stage")
+    else:
+        print(f"\n{STAGE_MARK} Stage {count} {SEP} {name}")
     _recap()
+
+
+def _section(name: str, summary: str, icon: str) -> None:
+    """A header outside a card: caps in dim on a rule, the summary pinned right."""
+    glyph = ICONS.get(icon, icon) if NERD else ""
+    left = f"{glyph} {name.upper()}" if glyph else name.upper()
+    room = max(8, _card_width() - 2 - len(left) - len(summary) - 2)
+    rule = f"{_fg(THEME['border'])}{GLYPH['rule'] * room}{RESET}"
+    print(f"\n  {DIM}{left}{RESET} {rule} {MUTED}{summary}{RESET}")
+
+
+def _heading(name: str, icon: str) -> None:
+    if _ANSI:
+        _section(name, "", icon)
+        print()
+    else:
+        print(f"\n{BOLD}{ACCENT}{STAGE_MARK} {name}{RESET}\n")
 
 
 def _recap() -> None:
@@ -156,28 +610,57 @@ def _recap() -> None:
     if not _chosen:
         return
     width = max(len(prompt) for prompt, _ in _chosen)
-    print(f"  {MUTED}{'chosen so far'.ljust(width)}{RESET}")
-    for prompt, value in _chosen:
-        print(f"  {MUTED}{prompt.ljust(width)}{RESET}  {TEXT}{value}{RESET}")
+    room = max(10, _card_width() - 4 - width - 2)
+    rows = []
+    for prompt, value in _chosen:  # a long answer wraps under its own column, never cut
+        parts = _wrap(value, room)
+        rows.append(f"{MUTED}{prompt.ljust(width)}{RESET}  {TEXT}{parts[0]}{RESET}")
+        rows += [f"{' ' * (width + 2)}{TEXT}{part}{RESET}" for part in parts[1:]]
+    card("Chosen so far", rows, icon="settings")
     print()
+
+
+def _line(lead: str, text: str) -> None:
+    """Print text after its lead, wrapped so every continuation lines up under the text."""
+    hang = "  " + " " * _width(lead)
+    rows = _wrap(text, shutil.get_terminal_size((80, 24)).columns - len(hang) - 1)
+    print(f"  {lead}{rows[0]}")
+    for row in rows[1:]:
+        print(f"{hang}{row}")
+
+
+def _show(kind: str, lead: str, text: str) -> None:
+    """Inside a stage a line joins its kind's card; outside one, or in plain output, it prints at once."""
+    if _ANSI and _in_stage:
+        _hold(kind, f"{lead}{text}")
+    else:
+        _line(lead, text)
 
 
 def say(text: str) -> None:
     """A plain instruction line."""
-    print(f"  {text}")
+    _show("info", "", text)
 
 
 def step(text: str) -> None:
     """An action the human takes in the browser."""
-    print(f"  {ACCENT}{BULLET}{RESET} {text}")
+    _show("info", f"{ACCENT}{BULLET}{RESET} ", text)
 
 
 def note(text: str) -> None:
-    print(f"  {MUTED}{text}{RESET}")
+    _show("info", "", f"{MUTED}{text}{RESET}")
+
+
+def _tag(text: str, hue: str) -> str:
+    """A square tinted tag: the status colour at 15 % as the fill, the colour as text."""
+    if not _ANSI:
+        return f"[{text}]"
+    return f"{_bg(mix(THEME['surface1'], hue, 0.15))}{_fg(hue)} {text} {RESET}"
 
 
 def warn(text: str) -> None:
-    print(f"  {ALERT}{WARN_MARK} {text}{RESET}")
+    """A notice: a tinted icon square, then the text."""
+    _show("warn", f"{_tag(WARN_MARK, THEME['alert'])} ", text)
 
 
 def _is_wsl() -> bool:
@@ -197,9 +680,9 @@ def _open_via_wsl(url: str) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            return True
         except OSError:
             continue
+        return True
     return False
 
 
@@ -208,35 +691,71 @@ def open_url(url: str) -> None:
     print(f"  {LINK}{OPEN_MARK} opening{RESET} {url}")
     if _is_wsl() and _open_via_wsl(url):
         return
-    try:
+    with contextlib.suppress(webbrowser.Error, OSError):
         if webbrowser.open(url):
             return
-    except Exception:
-        pass
     warn(f"couldn't open a browser, visit it manually: {url}")
 
 
-def pause(message: str = "Press Enter to continue") -> None:
-    """Wait for the human to confirm they've done the manual part."""
+def pause(message: str = "", *, back: bool = False) -> None:
+    """Wait until the human is ready to go on. With back=True, Left or `b` raises Back."""
     global _prompted
     _prompted = True
+    _flush()
+    if message:
+        print(f"  {BOLD}{message}{RESET}")
+    if not (_ANSI and sys.stdin.isatty()):
+        try:
+            reply = input(f"  {MUTED}[Enter{', b to go back' if back else ''}]{RESET} ")
+        except EOFError:
+            print()
+            return
+        if back and reply.strip().lower() == "b":
+            raise Back
+        return
+    keys = [("Enter", "continue", "enter"), *([(GLYPH["left"], "back", "left")] if back else [])]
+    legend, spans = _keys(*keys)
+    print(f"  {legend}")
+    clicks = _mouse(on=True)
+    below = _cursor_row() if clicks else None  # the row under the legend
+    hot = ""
     try:
-        input(f"  {MUTED}{message}{RESET} ")
-    except EOFError:
-        print()
+        while True:
+            pressed = _read_key()
+            if pressed.startswith(("click ", "move ")):
+                kind, x, y = pressed.split()
+                under = _hit(spans, int(x) - 3) if below and int(y) == below - 1 else ""
+                if kind == "move":
+                    if under != hot:
+                        hot = under
+                        sys.stdout.write(f"\033[1A\r\033[K  {_keys(*keys, hot=hot)[0]}\n")
+                        sys.stdout.flush()
+                    continue
+                pressed = under
+            if pressed == "enter":
+                return
+            if back and pressed in ("left", "b"):
+                raise Back
+    finally:
+        if clicks:
+            _mouse(on=False)
 
 
-def confirm(question: str, *, back: bool = False) -> bool:
-    """y/N gate. Returns True only on an explicit yes.
+def confirm(question: str, *, back: bool = False, hold: float = 0.0) -> bool:
+    """Yes/No gate, picked with the arrow keys like choose(); a piped run types y/N. Defaults to No.
 
-    With back=True, answering `b` raises Back instead, so a stage that opens
-    with a confirmation can be stepped out of the same way a choose can.
+    With back=True, stepping back (or `b`) raises Back instead, so a stage that
+    opens with a confirmation can be stepped out of the same way a choose can.
+    `hold` works as in _pick.
     """
     global _prompted
     _prompted = True
+    _flush()
+    if _ANSI and sys.stdin.isatty():
+        return choose(question, [("No", ""), ("Yes", "")], back=back, hold=hold) == "Yes"
     keys = "y/N, b to go back" if back else "y/N"
     try:
-        reply = input(f"  {ACCENT}? {question} [{keys}]{RESET} ")
+        reply = input(f"  {ACCENT}?{RESET} {BOLD}{question}{RESET} {MUTED}[{keys}]{RESET} ")
     except EOFError:
         print()
         return False
@@ -246,24 +765,12 @@ def confirm(question: str, *, back: bool = False) -> bool:
     return answer.startswith("y")
 
 
-def _read_key() -> str:
-    """One keypress, normalised to 'up', 'down', 'enter' or the character itself.
-
-    Arrow keys arrive as a two-part sequence, and the two platforms disagree on
-    which: a 0xe0 prefix on Windows, an escape sequence everywhere else.
-    """
+@contextlib.contextmanager
+def _raw():
+    """Keys one at a time with no echo while inside; a no-op on Windows, whose reads are already raw."""
     if os.name == "nt":
-        import msvcrt  # Windows-only, so it can't be a module-level import
-
-        char = msvcrt.getwch()
-        if char in ("\x00", "\xe0"):
-            return {"H": "up", "P": "down", "K": "left", "M": "right"}.get(
-                msvcrt.getwch(), ""
-            )
-        if char == "\x03":
-            raise KeyboardInterrupt
-        return "enter" if char in ("\r", "\n") else char
-
+        yield
+        return
     import termios  # POSIX-only, so it can't be a module-level import
 
     fd = sys.stdin.fileno()
@@ -274,23 +781,142 @@ def _read_key() -> str:
     mode[6][termios.VTIME] = 0
     termios.tcsetattr(fd, termios.TCSANOW, mode)
     try:
-        char = _read_char(fd)
-        if char == "\x03":
-            raise KeyboardInterrupt
-        if char in ("\r", "\n"):
-            return "enter"
-        if char != "\x1b":
-            return char
-        if not select.select([fd], [], [], 0.05)[0]:
-            return "escape"
-        bracket = _read_char(fd)
-        code = _read_char(fd) if bracket == "[" else ""
-        return {"A": "up", "B": "down", "D": "left", "C": "right"}.get(code, "")
+        yield
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, saved)
 
 
-def _choose_typed(prompt: str, options: list[tuple[str, str]], back: bool) -> str:
+def _next_char(wait: float | None) -> str:
+    """The next input character, or "" when none arrives within `wait` seconds (None waits forever)."""
+    if os.name == "nt":
+        import msvcrt  # Windows-only, so it can't be a module-level import
+
+        # Poll first: a blocking getwch drops the console input mode, and clicks stop arriving.
+        end = None if wait is None else time.monotonic() + wait
+        while not msvcrt.kbhit():
+            if end is not None and time.monotonic() > end:
+                return ""
+            time.sleep(0.005)
+        return msvcrt.getwch()
+    fd = sys.stdin.fileno()
+    if wait is not None and not select.select([fd], [], [], wait)[0]:
+        return ""
+    return _read_char(fd)
+
+
+def _parse_key(wait: float | None = None) -> str:
+    """One input, normalised to a key name, a character, 'click X Y' or 'pos ROW COL'.
+
+    Key names are 'up', 'down', 'left', 'right', 'enter' and 'escape'. 'click X Y' is a left
+    click (1-based cell), and 'pos ROW COL' is a cursor report.
+
+    Windows sends arrows with a 0xe0 prefix until VT input is on; then, like
+    every other terminal, it sends escape sequences, clicks included (SGR mode).
+    """
+    char = _next_char(wait)
+    if char in ("\x00", "\xe0"):
+        return {"H": "up", "P": "down", "K": "left", "M": "right"}.get(_next_char(None), "")
+    if char == "\x03":
+        raise KeyboardInterrupt
+    if char in ("\r", "\n"):
+        return "enter"
+    if char != "\x1b":
+        return char
+    if _next_char(0.05) != "[":
+        return "escape"
+    code = _next_char(0.05)
+    if code in ("A", "B", "C", "D"):
+        return {"A": "up", "B": "down", "D": "left", "C": "right"}[code]
+    report, end = "", ""
+    if code == "<" or code.isdigit():
+        report = "" if code == "<" else code
+        while (end := _next_char(0.05)) and end not in "MmR~":
+            report += end
+    parts = report.split(";")
+    if code == "<" and end == "M" and len(parts) == 3 and all(part.isdigit() for part in parts):
+        button, x, y = (int(part) for part in parts)
+        if button in (64, 65):  # the wheel
+            return "up" if button == 64 else "down"
+        if button == 35:  # motion with no button held
+            return f"move {x} {y}"
+        return f"click {x} {y}" if button == 0 else ""  # drags and other buttons carry other bits
+    if end == "R" and len(parts) == 2:
+        return f"pos {parts[0]} {parts[1]}"
+    return ""
+
+
+def _read_key(wait: float | None = None) -> str:
+    with _raw():
+        return _parse_key(wait)
+
+
+_console_mode: int | None = None  # Windows input mode to put back when clicks stop
+
+
+def _mouse(*, on: bool) -> bool:
+    """Start or stop click reporting; returns whether clicks are now reported.
+
+    On Windows this also turns on VT input, so clicks arrive as escape
+    sequences, and turns off quick edit, which would eat them.
+    """
+    global _console_mode
+    if not (_ANSI and sys.stdin.isatty()):
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        if on:
+            mode = ctypes.c_uint32()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                return False
+            _console_mode = mode.value
+            kernel32.SetConsoleMode(
+                handle, (mode.value | 0x200 | 0x80) & ~0x40
+            )  # VT input, extended flags, no quick edit
+        elif _console_mode is not None:
+            kernel32.SetConsoleMode(handle, _console_mode)
+            _console_mode = None
+    sys.stdout.write("\033[?1000h\033[?1003h\033[?1006h" if on else "\033[?1000l\033[?1003l\033[?1006l")
+    sys.stdout.flush()
+    if not on:
+        _drain()
+    return on
+
+
+def _drain() -> None:
+    """Drop input still queued (a click's release, motion), so the next typed answer starts clean."""
+    if os.name == "nt":
+        import msvcrt  # Windows-only, so it can't be a module-level import
+
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+        return
+    import termios  # POSIX-only, so it can't be a module-level import
+
+    termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+
+
+def _cursor_row() -> int | None:
+    """The cursor's screen row (1-based), asked of the terminal; None when it doesn't answer."""
+    with _raw():
+        sys.stdout.write("\033[6n")
+        sys.stdout.flush()
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
+            key = _parse_key(0.1)  # a leftover click release reads as "", so only the deadline ends the wait
+            if key.startswith("pos "):
+                return int(key.split()[1])
+    return None
+
+
+def _hit(spans: list[tuple[int, int, str]], column: int) -> str:
+    """The key a legend chip stands for, when `column` (0-based, after the indent) falls on one."""
+    return next((press for start, end, press in spans if start <= column < end), "")
+
+
+def _choose_typed(prompt: str, options: list[tuple[str, str]], *, back: bool) -> str:
     """Numbered fallback for when the terminal can't be driven key by key.
 
     A piped run lands here, so a scripted wizard still works: it takes the value
@@ -298,6 +924,7 @@ def _choose_typed(prompt: str, options: list[tuple[str, str]], back: bool) -> st
     answers mean stdin has closed and looping would spin forever.
     """
     values = [value for value, _ in options]
+    lowered = [value.lower() for value in values]
     width = max(len(value) for value in values)
     for position, (value, description) in enumerate(options, start=1):
         print(f"  {position}. {value.ljust(width)}  {MUTED}{description}{RESET}")
@@ -305,8 +932,8 @@ def _choose_typed(prompt: str, options: list[tuple[str, str]], back: bool) -> st
     empty = 0
     while True:
         reply = _prompt(f"{prompt} [{'/'.join(values)}]", "", hidden=False).strip().lower()
-        if reply in values:
-            return reply
+        if reply in lowered:
+            return values[lowered.index(reply)]
         if reply.isdigit() and 1 <= int(reply) <= len(values):
             return values[int(reply) - 1]
         if back and reply == "b":
@@ -319,6 +946,46 @@ def _choose_typed(prompt: str, options: list[tuple[str, str]], back: bool) -> st
         warn(f"pick one of: {', '.join(values)}")
 
 
+def _choose_many_typed(
+    prompt: str, options: list[tuple[str, str]], picked: set[str], *, back: bool, tags: dict[str, str]
+) -> list[str]:
+    """Numbered fallback for choose_many: Enter keeps the ticked rows, or type numbers, all or none."""
+    values = [value for value, _ in options]
+    width = max(len(value) for value in values)
+    for position, (value, description) in enumerate(options, start=1):
+        tag = f"{tags[value]}: " if value in tags else ""
+        box = GLYPH["on"] if value in picked else GLYPH["off"]
+        print(f"  {position:>2}. {box} {value.ljust(width)}  {MUTED}{tag}{description}{RESET}")
+    while True:
+        reply = (
+            _prompt(f"{prompt} [numbers like 1 3 5, all, none, Enter keeps the ticked ones]", "", hidden=False)
+            .strip()
+            .lower()
+        )
+        if not reply:
+            return [value for value in values if value in picked]
+        if back and reply == "b":
+            raise Back
+        if reply == "all":
+            return values
+        if reply == "none":
+            return []
+        numbers = reply.replace(",", " ").split()
+        if all(number.isdigit() and 1 <= int(number) <= len(values) for number in numbers):
+            wanted = {values[int(number) - 1] for number in numbers}
+            return [value for value in values if value in wanted]
+        warn(f"type numbers from 1 to {len(values)}, all or none")
+
+
+def checked(label: str, value: str, *, ok: bool = True) -> None:
+    """Record something a stage detected, shown in the receipt's Checked card. A re-run stage replaces its line."""
+    for position, (seen, _, _) in enumerate(_found):
+        if seen == label:
+            _found[position] = (label, value, ok)
+            return
+    _found.append((label, value, ok))
+
+
 def _remember(label: str, value: str) -> None:
     """Record an answer for the recap, replacing an earlier one for that label."""
     for position, (seen, _) in enumerate(_chosen):
@@ -328,7 +995,162 @@ def _remember(label: str, value: str) -> None:
     _chosen.append((label, value))
 
 
-def choose(prompt: str, options: list[tuple[str, str]], *, back: bool = False) -> str:
+def _pick(
+    prompt: str,
+    options: list[tuple[str, str]],
+    *,
+    picked: set[str] | None,
+    back: bool,
+    tags: dict[str, str] | None = None,
+    hold: float = 0.0,
+) -> int | None:
+    """Draw the list and move through it; returns the row Enter landed on, or None for Back.
+
+    For `hold` seconds after the list shows, Enter, a click on a row and a digit do nothing and the
+    Enter chip draws dim, so an Enter mashed or held from the screen before cannot answer it.
+
+    `picked` turns rows into toggles that Enter or Space flips, and adds a Continue
+    row at the end, which goes on. `tags` adds a short status after a name.
+    When every description fits its row it stays there. Otherwise rows keep only
+    name and tag, and the highlighted row's description shows whole in a strip
+    under the list, so nothing is ever cut mid-row. The key legend closes the list.
+    A click on a row acts like Enter on it, and a click on a legend chip presses its key.
+    """
+    tags = tags or {}
+    many = picked is not None
+    rows_count = len(options) + (1 if many else 0)  # the Continue row comes last
+    room = _card_width()  # the highlight stops where the cards above it do
+    width = max(len(value) for value, _ in options)
+    tag_width = max((len(tag) for tag in tags.values()), default=0)
+    lead = 2 + (len(GLYPH["on"]) + 1 if many else 0) + width + 2 + (tag_width + 2 if tag_width else 0)
+    inline = all(lead + len(description) <= room for _, description in options)
+    strip_rows = 0 if inline else min(4, max(len(_wrap(description, room - 2)) for _, description in options))
+    keys = [
+        (GLYPH["updown"], "move", ""),
+        *([("Enter", "tick", "enter"), ("a", "all", "a")] if many else [("Enter", "choose", "enter")]),
+        *([(GLYPH["left"], "back", "left")] if back else []),
+    ]
+    _, spans = _keys(*keys)
+    index = 0
+    hot = ""  # the legend key under the pointer
+    hovering = False  # the cursor row was last moved by the pointer, not a key
+    live_at = time.monotonic() + hold
+
+    def row(position: int) -> str:
+        here = position == index
+        # the cursor row is the selection (surface3, primary-70); under the pointer it is the hover (surface4, accent)
+        body, ink = (THEME["surface4"], ACCENT) if hovering else (THEME["surface3"], _fg(THEME["primary70"]))
+        marker = f"{ink}{ARROW}{RESET}" if here else " "
+        if position == len(options):
+            count = f"{MUTED}{len(picked)} of {len(options)} ticked{RESET}"
+            line = f"{marker} {' ' * (len(GLYPH['on']) + 1)}{subpill('Continue', fill=body if here else None)} {count}"
+        else:
+            value, description = options[position]
+            toggle = ""
+            if many:
+                toggle = f"{ACCENT}{GLYPH['on']}{RESET} " if value in picked else f"{MUTED}{GLYPH['off']}{RESET} "
+            label = value.ljust(width)
+            label = f"{BOLD}{ink}{label}{RESET}" if here else label
+            tag = f"  {MUTED}{tags.get(value, '').ljust(tag_width)}{RESET}" if tag_width else ""
+            text = f"  {MUTED}{description}{RESET}" if inline else ""
+            line = f"{marker} {toggle}{label}{tag}{text}"
+        line = _fit(line, room)
+        if not (here and _ANSI):
+            return line
+        paint = _bg(body)
+        return paint + (line + " " * (room - _width(line))).replace(RESET, RESET + paint) + RESET
+
+    def footer() -> list[str]:
+        lines = []
+        if strip_rows:
+            about = options[index][1] if index < len(options) else "Go on with what is ticked."
+            text = _wrap(about, room - 2)
+            if len(text) > strip_rows:
+                text = [*text[: strip_rows - 1], _fit(" ".join(text[strip_rows - 1 :]), room - 2)]
+            text += [""] * (strip_rows - len(text))
+            lines = [
+                f"{_fg(THEME['border'])}{GLYPH['rule'] * room}{RESET}",
+                *(f"  {MUTED}{line}{RESET}" for line in text),
+            ]
+        legend = _keys(*keys, hot=hot, dead="" if time.monotonic() >= live_at else "enter")[0]
+        return [*lines, legend] if lines else ["", legend]
+
+    def drawn() -> list[str]:
+        return [row(position) for position in range(rows_count)] + footer()
+
+    def render(*, again: bool) -> None:
+        lines = drawn()
+        if again:
+            sys.stdout.write(f"\033[{len(lines)}A")
+        for line in lines:
+            sys.stdout.write(f"\r\033[K  {line}\n")
+        sys.stdout.flush()
+
+    print(f"\n  {BOLD}{prompt}{RESET}")
+    sys.stdout.write("\033[?25l")  # the cursor parked mid-list reads as a glitch
+    clicks = _mouse(on=True)
+    try:
+        render(again=False)
+        below = _cursor_row() if clicks else None
+        top = below - len(drawn()) if below else None  # screen row of the first list row
+        while True:
+            early = time.monotonic() < live_at
+            pressed = _read_key(live_at - time.monotonic() if early else None)
+            if early and not pressed:  # the hold ran out: draw the Enter chip live
+                render(again=True)
+                continue
+            if pressed.startswith(("click ", "move ")):
+                kind, x, y = pressed.split()
+                line = int(y) - top if top and top > 0 else -1
+                on_legend = line == len(drawn()) - 1
+                if kind == "move":  # hover: rows take the cursor, chips light up; redraw only on a change
+                    was = (index, hot, hovering)
+                    index = line if 0 <= line < rows_count else index
+                    hovering = hovering or 0 <= line < rows_count
+                    hot = _hit(spans, int(x) - 3) if on_legend else ""
+                    if (index, hot, hovering) != was:
+                        render(again=True)
+                    continue
+                if 0 <= line < rows_count:
+                    index = line
+                    pressed = "enter"
+                elif on_legend:
+                    pressed = _hit(spans, int(x) - 3)
+                else:
+                    continue
+            else:
+                hovering = False
+            if time.monotonic() < live_at and (pressed == "enter" or pressed.isdigit()):
+                continue
+            if pressed == "enter" or (many and pressed == " "):
+                if not many or index == len(options):
+                    render(again=True)
+                    return index
+                picked.symmetric_difference_update({options[index][0]})
+            elif back and pressed in ("left", "b"):
+                return None
+            elif pressed in ("up", "k"):
+                index = (index - 1) % rows_count
+            elif pressed in ("down", "j"):
+                index = (index + 1) % rows_count
+            elif many and pressed == "a":
+                everything = {value for value, _ in options}
+                picked.clear() if picked == everything else picked.update(everything)
+            elif not many and pressed.isdigit() and 1 <= int(pressed) <= len(options):
+                index = int(pressed) - 1
+                render(again=True)
+                return index
+            else:
+                continue
+            render(again=True)
+    finally:
+        if clicks:
+            _mouse(on=False)
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
+
+
+def choose(prompt: str, options: list[tuple[str, str]], *, back: bool = False, hold: float = 0.0) -> str:
     """Pick one option with the arrow keys. Returns the chosen value.
 
     Each option is a (value, description) pair, so the list explains itself and
@@ -338,60 +1160,50 @@ def choose(prompt: str, options: list[tuple[str, str]], *, back: bool = False) -
     """
     global _prompted
     _prompted = True
+    _flush()
     if not (_ANSI and sys.stdin.isatty()):
-        value = _choose_typed(prompt, options, back)
+        value = _choose_typed(prompt, options, back=back)
         _remember(prompt, value)
         return value
 
-    width = max(len(value) for value, _ in options)
-    index = 0
-
-    def render(again: bool) -> None:
-        if again:
-            sys.stdout.write(f"\033[{len(options)}A")
-        for position, (value, description) in enumerate(options):
-            chosen = position == index
-            marker = f"{ACCENT}{ARROW}{RESET}" if chosen else " "
-            label = value.ljust(width)
-            label = f"{BOLD}{label}{RESET}" if chosen else label
-            sys.stdout.write(f"\r\033[K  {marker} {label}  {MUTED}{description}{RESET}\n")
-        sys.stdout.flush()
-
-    hint = "arrows, then Enter" + (", or Left to go back a stage" if back else "")
-    print(f"\n  {BOLD}{prompt}{RESET} {MUTED}{hint}{RESET}")
-    sys.stdout.write("\033[?25l")  # the cursor parked mid-list reads as a glitch
-    stepped_back = False
-    try:
-        render(again=False)
-        while True:
-            pressed = _read_key()
-            if pressed == "enter":
-                break
-            if back and pressed in ("left", "b"):
-                stepped_back = True
-                break
-            if pressed in ("up", "k"):
-                index = (index - 1) % len(options)
-            elif pressed in ("down", "j"):
-                index = (index + 1) % len(options)
-            elif pressed.isdigit() and 1 <= int(pressed) <= len(options):
-                index = int(pressed) - 1
-                render(again=True)
-                break
-            else:
-                continue
-            render(again=True)
-    finally:
-        sys.stdout.write("\033[?25h")
-        sys.stdout.flush()
-
-    if stepped_back:
+    index = _pick(prompt, options, picked=None, back=back, hold=hold)
+    if index is None:
         raise Back
-
     value = options[index][0]
     print(f"  {GOOD}{OK_MARK}{RESET} {value}")
     _remember(prompt, value)
     return value
+
+
+def choose_many(
+    prompt: str,
+    options: list[tuple[str, str]],
+    *,
+    selected: list[str] | tuple[str, ...] = (),
+    tags: dict[str, str] | None = None,
+    back: bool = False,
+) -> list[str]:
+    """Tick any number of options; returns the ticked values in list order.
+
+    Enter or Space flips the row under the cursor, `a` ticks or clears them all,
+    and the Continue row at the end goes on; a click works on any row. `selected`
+    starts ticked; `tags` maps a value to a short status
+    drawn after its name, such as "installed". Back works as in choose.
+    """
+    global _prompted
+    _prompted = True
+    _flush()
+    picked = set(selected)
+    if not (_ANSI and sys.stdin.isatty()):
+        values = _choose_many_typed(prompt, options, picked, back=back, tags=tags or {})
+    else:
+        if _pick(prompt, options, picked=picked, back=back, tags=tags) is None:
+            raise Back
+        values = [value for value, _ in options if value in picked]
+    shown = ", ".join(values) if values else "none"
+    print(f"  {GOOD}{OK_MARK}{RESET} {shown}")
+    _remember(prompt, shown if len(shown) <= 40 else f"{len(values)} of {len(options)}: {shown}")
+    return values
 
 
 _planned: list[tuple[int, str, callable]] = []  # stage, receipt line, action
@@ -412,24 +1224,50 @@ def plan(line: str, action: callable) -> None:
 def receipt() -> None:
     """The last stage: every answer and every queued action, one confirmation."""
     global _approved
-    stage("Receipt")
+    stage("Receipt", icon="receipt")
+    if _found:
+        width = max(len(label) for label, _, _ in _found)
+        inner = _card_width() - 4
+        lines = []
+        for label, value, ok in _found:
+            head = f"{label.ljust(width)}  {MUTED}{value}{RESET}"
+            tag = _tag("ok", THEME["good"]) if ok else _tag("warn", THEME["warn"])
+            lines.append(f"{head}{' ' * max(2, inner - _width(head) - _width(tag))}{tag}")
+        card("Checked", lines, icon="installed")
+        print()
     if not _planned:
-        say("Nothing to do: everything is already in place.")
         _approved = False
+        card("Nothing to change", ["Everything you picked is already in place."], icon="done", hue=THEME["good"])
+        print()
+        pause("Done? Or go back and pick something else.", back=True)
         return
 
-    say("About to:")
-    for _, line, _ in _planned:
-        print(f"  {ACCENT}{BULLET}{RESET} {line}")
+    card("About to", [f"{ACCENT}{BULLET}{RESET} {line}" for _, line, _ in _planned], icon="actions")
     print()
-    note("Nothing has been downloaded, written or copied yet.")
-    _approved = confirm("Do all of the above?", back=True)
+    _line("", f"{MUTED}Nothing has been downloaded, written or copied yet.{RESET}")
+    _approved = confirm("Do all of the above?", back=True, hold=RECEIPT_HOLD_S)
+    # A piped run keeps No as the end, so its scripted answers still line up.
+    if _approved or not (_ANSI and sys.stdin.isatty()):
+        return
+    if choose("Nothing was applied. What now?", AFTER_NO) != AFTER_NO[0][0]:
+        raise Back
+
+
+# A held or mashed Enter from the stage before must not answer the receipt.
+RECEIPT_HOLD_S = 0.5
+AFTER_NO = [
+    ("Quit without changes", "end here; nothing on this machine changed"),
+    ("Change an answer", "step back to the last question you answered"),
+]
 
 
 def apply() -> None:
     """Run the queued actions in order. A failure is reported and the rest go on."""
+    global _in_stage
+    _flush()
+    _in_stage = False
     _clear()
-    print(f"\n{BOLD}{ACCENT}{STAGE_MARK} Applying{RESET}\n")
+    _heading("Applying", "actions")
     for _, line, action in _planned:
         print(f"  {ACCENT}{ARROW}{RESET} {line}")
         try:
@@ -507,11 +1345,16 @@ def _read_masked(label: str) -> str:
     """Read a secret, echoing one MASK per character.
 
     Full invisibility makes it impossible to tell a paste landed, landed twice,
-    or landed empty, so we show the length without showing the value. Falls back
-    to getpass when stdin isn't a terminal (piped input, CI).
+    or landed empty, so we show the length without showing the value. Reads a
+    plain line when stdin isn't a terminal (piped input, CI): getpass would go
+    to the console instead and wait there.
     """
     if not sys.stdin.isatty():
-        return getpass.getpass(label)
+        sys.stdout.write(label)
+        sys.stdout.flush()
+        line = sys.stdin.readline()
+        print()
+        return line.rstrip("\r\n")
 
     chars: list[str] = []
 
@@ -551,9 +1394,7 @@ def _read_masked(label: str) -> str:
         mode[3] &= ~(termios.ECHO | termios.ICANON)  # lflag
         mode[6][termios.VMIN] = 1  # cc: one character is enough to return
         mode[6][termios.VTIME] = 0
-        # TCSANOW, never TCSAFLUSH: flushing discards whatever the human already
-        # pasted, and draining stalls until pending output is consumed. Both open
-        # a window where the terminal still echoes the secret in cleartext.
+        # TCSANOW, never TCSAFLUSH: a flush drops a paste and a drain leaves the secret echoing meanwhile.
         termios.tcsetattr(fd, termios.TCSANOW, mode)
         try:
             # Prompt goes out only after echo is off, so no keystroke can leak.
@@ -584,9 +1425,10 @@ def _read_masked(label: str) -> str:
     return "".join(chars)
 
 
-def _prompt(prompt: str, current: str, hidden: bool) -> str:
+def _prompt(prompt: str, current: str, *, hidden: bool) -> str:
     global _prompted
     _prompted = True
+    _flush()
     suffix = f" {MUTED}[Enter keeps current]{RESET}" if current else ""
     label = f"  {BOLD}{prompt}{RESET}{suffix} "
     try:
@@ -641,11 +1483,7 @@ def write_env(key: str, value: str) -> None:
     real file nor leave a copy of the value behind in a temp file.
     """
     _warn_if_env_tracked()
-    lines = (
-        ENV_FILE.read_text(encoding="utf-8").splitlines()
-        if ENV_FILE.is_file()
-        else []
-    )
+    lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.is_file() else []
     kept = [line for line in lines if not line.startswith(f"{key}=")]
     kept.append(f"{key}={value}")
 
@@ -655,8 +1493,8 @@ def write_env(key: str, value: str) -> None:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as out:
             out.write("\n".join(kept) + "\n")
         if os.name != "nt":
-            os.chmod(tmp, 0o600)
-        os.replace(tmp, ENV_FILE)
+            Path(tmp).chmod(0o600)
+        Path(tmp).replace(ENV_FILE)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
@@ -722,25 +1560,25 @@ def set_var(name: str, value: str) -> None:
     warn(f"skipped GitHub variable {name}, gh not ready. Set it later")
 
 
-def finish() -> None:
-    """Clear, then a closing summary of everything configured."""
+def finish(next_steps: list[str] | tuple[str, ...] = ()) -> None:
+    """Clear, then a closing card of everything configured and what is left to do."""
     _clear()
-    print(f"\n{BOLD}{GOOD}  {OK_MARK} Setup complete{RESET}")
+    print()
+    lines = []
     if _written_env:
-        note(
-            f"wrote {len(_written_env)} value(s) to {ENV_FILE}: "
-            f"{' '.join(_written_env)}"
-        )
+        lines.append(f"{MUTED}wrote {len(_written_env)} value(s) to {ENV_FILE}: {' '.join(_written_env)}{RESET}")
     if _written_secret:
-        note(
-            f"set {len(_written_secret)} GitHub secret(s): "
-            f"{' '.join(_written_secret)}"
-        )
+        lines.append(f"{MUTED}set {len(_written_secret)} GitHub secret(s): {' '.join(_written_secret)}{RESET}")
+    lines.extend(f"{ACCENT}{BULLET}{RESET} {item}" for item in next_steps)
     if _skipped:
-        print()
-        warn("still to do by hand:")
-        for item in _skipped:
-            note(f"  - {item}")
+        lines += ["", f"{ALERT}{WARN_MARK} still to do by hand:{RESET}"]
+        lines.extend(f"{MUTED}- {item}{RESET}" for item in _skipped)
+    if not _planned:
+        card("Nothing changed", lines or ["Everything was already in place."], icon="done", hue=THEME["muted"])
+    elif not _approved:
+        card("Stopped at the receipt, nothing changed", lines, icon="warn", hue=THEME["muted"])
+    else:
+        card("Setup complete", lines, icon="done", hue=THEME["good"])
     print()
 
 
@@ -756,12 +1594,9 @@ def run(main: callable) -> None:
         sys.exit(130)
 
 
-# ──────────────────────────────────────────────────────────────────────────
 # STAGES
 # ──────────────────────────────────────────────────────────────────────────
 
-import json
-import re
 import urllib.error
 import urllib.request
 import zipfile
@@ -1121,9 +1956,9 @@ def report_tools() -> None:
         ("git", "only needed to pull updates"),
     ):
         if have(exe):
-            print(f"  {GOOD}{OK_MARK}{RESET} {exe}")
+            checked(exe, have(exe))
         else:
-            warn(f"{exe} missing {SEP} {why}")
+            checked(exe, f"missing, {why}", ok=False)
 
     if not have("ffmpeg"):
         note(f"ffmpeg is the one that silently breaks features: {FFMPEG_PAGE}")
@@ -1139,10 +1974,8 @@ def stage_prerequisites() -> None:
     pointed at the new config with --config-dir.
     """
     stage("Prerequisites and install location")
-    say("Checking the tools the config and its scripts shell out to.")
-    print()
+    say("Checking the tools the config and its scripts shell out to. The receipt lists what was found.")
     report_tools()
-    print()
 
     say("Where the config gets installed.")
     mode = choose(
@@ -1163,7 +1996,6 @@ def stage_prerequisites() -> None:
 
 
 def locate_here() -> None:
-    print()
     say(f"mpv goes into {REPO}, next to the portable_config already there.")
     note("Nothing gets copied, and repo edits take effect at once.")
     FOUND["home"] = REPO
@@ -1181,16 +2013,14 @@ def locate_here() -> None:
 def locate_system() -> None:
     mpv = find_mpv()
     if mpv:
-        print()
-        say(f"found mpv at {mpv}")
-        if confirm("Use this one?"):
+        checked("mpv", str(mpv))
+        if confirm(f"Use the mpv at {mpv}?"):
             FOUND["mpv"], FOUND["home"] = mpv, mpv.parent
             return
     obtain_mpv()
 
 
 def locate_portable() -> None:
-    print()
     home = ask_path("MPV_HOME", "Folder to install into (created if missing):")
     if home is None:
         _skipped.append("everything downstream: no install folder given")
@@ -1205,7 +2035,6 @@ def locate_portable() -> None:
         FOUND["mpv"] = inside
         return
 
-    print()
     say(f"{home} has no mpv.exe of its own.")
     route = choose(
         "That folder",
@@ -1226,11 +2055,12 @@ def locate_portable() -> None:
 
 def obtain_mpv() -> None:
     """No mpv was found: fetch one, be told where one is, or go and install it."""
-    print()
+    checked("mpv", "not found", ok=False)
     warn("mpv itself is not part of this repo, and could not be found.")
-    note("On Windows mpv has no official binary: mpv.io calls every Windows")
-    note("package an unofficial third-party build, so fetch takes the one it")
-    note("lists first, matched to this CPU.")
+    note(
+        "On Windows mpv has no official binary: mpv.io calls every Windows package an unofficial "
+        "third-party build, so fetch takes the one it lists first, matched to this CPU."
+    )
     route = choose(
         "Get mpv",
         [
@@ -1249,7 +2079,7 @@ def obtain_mpv() -> None:
 
     if route == "page":
         open_url(MPV_PAGE)
-        pause("Install or extract mpv, then press Enter")
+        pause("Install or extract mpv. Next: point me at it.")
 
     mpv = ask_existing_mpv()
     FOUND["mpv"] = mpv
@@ -1311,12 +2141,13 @@ def unpack_mpv(name: str, url: str, target: Path) -> Path | None:
 
 def stage_uosc() -> None:
     stage("uosc")
-    say("uosc is taken from upstream rather than committed, and it is the")
-    say("interface: without it there is no timeline, no menu and no controls.")
-    print()
+    say(
+        "uosc is taken from upstream rather than committed, and it is the interface: "
+        "without it there is no timeline, no menu and no controls."
+    )
 
     if (UOSC_DIR / "main.lua").is_file():
-        say(f"already present at {UOSC_DIR}")
+        checked("uosc", str(UOSC_DIR))
         if not confirm("Replace it with a fresh download?", back=True):
             return
 
@@ -1366,10 +2197,11 @@ def install_uosc_by_hand() -> None:
 
 
 def stage_patch() -> None:
-    stage("Cascade menu patch")
-    say("uosc slides its whole menu stack to centre the current level. The local")
-    say("patch pins the root where you clicked and cascades submenus rightwards.")
-    print()
+    stage("uosc patches")
+    say(
+        "Three local patches change uosc's menu: it opens where you clicked and cascades rightwards, "
+        "search matches the whole path, and rows draw in Moonlight with keys as keycaps."
+    )
 
     installed = (UOSC_DIR / "main.lua").is_file()
     if not installed and not FOUND.get("uosc_planned"):
@@ -1379,36 +2211,39 @@ def stage_patch() -> None:
 
     if installed and not FOUND.get("uosc_planned"):
         ok, lines = capture([sys.executable, str(APPLY_PATCH), "--check"])
-        if ok and any("already applied" in line for line in lines):
-            say("already applied, nothing to do")
+        if ok and lines and all("already applied" in line for line in lines if line.strip()):
+            checked("uosc patches", "all applied")
             return
 
     say("applied once uosc is in place")
-    plan("apply the cascade menu patch to uosc", apply_patch)
+    plan("apply the local patches to uosc", apply_patch)
 
 
 def apply_patch() -> None:
     if run_cmd([sys.executable, str(APPLY_PATCH)]):
         print(f"  {GOOD}{OK_MARK} patched{RESET} uosc")
-        note("uosc's own updater overwrites this. Run `just patch` after every update.")
+        note("uosc's own updater overwrites these. Run `just patch` after every update.")
         return
-    warn("the patch did not apply cleanly")
-    note("uosc moved the lines it anchors on. Open patches/uosc-cascade-menu.patch")
-    note("against the installed uosc and re-anchor the hunks.")
-    _skipped.append("reapply patches/uosc-cascade-menu.patch by hand")
+    warn("a patch did not apply cleanly")
+    note(
+        "uosc moved the lines it anchors on. `just patch-check` names which patch; "
+        "re-anchor its hunks against the installed uosc."
+    )
+    _skipped.append("reapply the patches in patches/ by hand")
 
 
 def stage_shaders() -> None:
     stage("Anime4K shaders")
-    say("Shaders are too large to commit. profiles.conf and the CTRL+1..7")
-    say("bindings load them from shaders/Anime4K/, so the folder name matters.")
-    print()
+    say(
+        "Shaders are too large to commit. profiles.conf and the CTRL+1..7 bindings load them "
+        "from shaders/Anime4K/, so the folder name matters."
+    )
 
     wanted = referenced_shaders()
     missing = sorted(name for name in wanted if not (SHADERS / name).is_file())
     anime = [name for name in missing if name.startswith("Anime4K/")]
     others = [name for name in missing if not name.startswith("Anime4K/")]
-    say(f"{len(wanted) - len(missing)} of {len(wanted)} shaders this config loads are present")
+    checked("shaders", f"{len(wanted) - len(missing)} of {len(wanted)} present", ok=not missing)
 
     if anime:
         found = release_zip(ANIME4K_REPO, "anime4k")
@@ -1457,11 +2292,13 @@ def report_shaders(count: int) -> None:
 
 def stage_layout() -> None:
     stage("Keyboard layout")
-    say("mpv cannot read the OS keyboard layout, so F6 draws whichever one this")
-    say("file names. It ships set to abnt2, which is a Brazilian keyboard.")
+    say(
+        "mpv cannot read the OS keyboard layout, so F6 draws whichever one this file names. "
+        "It ships set to abnt2, which is a Brazilian keyboard."
+    )
     layout = choose("Your keyboard", LAYOUTS, back=True)
     if layout == current_layout():
-        say(f"already set to {layout}")
+        checked("keyboard layout", f"{layout}, already set")
         return
     plan(
         f"set layout={layout} in script-opts/keybind-visualizer.conf",
@@ -1472,13 +2309,14 @@ def stage_layout() -> None:
 
 def stage_anilist_deps() -> None:
     stage("AniList python packages")
-    say("The AniList scripts import requests and guessit. They go into a local")
-    say("vendor/ folder, so they do not depend on whatever Lib sits beside mpv.")
-    print()
+    say(
+        "The AniList scripts import requests and guessit. They go into a local vendor/ folder, "
+        "so they do not depend on whatever Lib sits beside mpv."
+    )
 
     ok, _ = capture([sys.executable, str(ANILIST_DIR / "anilistUpdater.py"), "--deps"])
     if ok:
-        say("both already import from vendor/, nothing to do")
+        checked("AniList packages", "import from vendor/")
         return
 
     if not confirm("Install them? (skip if you do not use AniList)", back=True):
@@ -1511,9 +2349,10 @@ def install_anilist_deps() -> None:
 
 def stage_anilist_token() -> None:
     stage("AniList token")
-    say("Marks each episode watched at 85%. Skip it and every other script still")
-    say("works; only the n panel and CTRL+n go quiet.")
-    print()
+    say(
+        "Marks each episode watched at 85%. Skip it and every other script still works; "
+        "only the n panel and CTRL+n go quiet."
+    )
 
     if os.name != "nt":
         warn("the token store uses Windows CryptProtectData, so this stage is Windows-only")
@@ -1560,7 +2399,6 @@ def link_anilist(token: str) -> None:
 def stage_install() -> None:
     stage("Install the config")
     say("mpv reads portable_config/ from beside its own executable.")
-    print()
 
     home = FOUND["home"]
     if home is None:
@@ -1609,22 +2447,25 @@ def verify() -> None:
     if mpv is None or installed is None:
         return
 
-    print(f"\n{BOLD}{ACCENT}{STAGE_MARK} Verify{RESET}\n")
     # An mpv from elsewhere ignores a portable_config it is not sitting next to.
     borrowed = mpv.parent != installed.parent
     command = [str(mpv), f"--config-dir={installed}"] if borrowed else [str(mpv)]
+    lines = []
     if borrowed:
-        say(f"{mpv} lives elsewhere, so it needs the config pointed out to it:")
-        note(f'mpv --config-dir="{installed}"')
-        print()
-
-    say("Open any video, then:")
-    step("F6  - the keyboard map. Every key drawn means input.conf loaded.")
-    step("TAB - the uosc interface. A timeline means uosc loaded and patched.")
-    step("F4  - the subtitle index. Needs ffmpeg and a subtitle track.")
-    print()
-    note(f"mpv writes its log to {installed / 'mpv.log'} if something is missing.")
-    print()
+        lines += [
+            f"{mpv} lives elsewhere, so it needs the config pointed out to it:",
+            f'{MUTED}mpv --config-dir="{installed}"{RESET}',
+            "",
+        ]
+    lines += [
+        "Open any video, then:",
+        f"{keycap('F6')}  the keyboard map. Every key drawn means input.conf loaded.",
+        f"{keycap('Tab')}  the uosc interface. A timeline means uosc loaded and patched.",
+        f"{keycap('F4')}  the subtitle index. Needs ffmpeg and a subtitle track.",
+        "",
+        f"{MUTED}mpv writes its log to {installed / 'mpv.log'} if something is missing.{RESET}",
+    ]
+    card("Verify", lines, icon="done")
     if confirm("Launch mpv now to try it?"):
         try:
             subprocess.Popen(command, cwd=str(mpv.parent))

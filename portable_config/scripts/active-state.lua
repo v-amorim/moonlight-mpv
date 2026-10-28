@@ -33,18 +33,30 @@ local C = {}
 for name, rgb in pairs({
 	bg = "0D0E17", -- #0D0E17  full-screen dim behind the panel
 	panel = "141726", -- #141726  panel background
-	border = "252A42", -- #252A42  panel border
+	border = "242839", -- #242839  panel hairline
 	text = "EEEEFA", -- #EEEEFA  row text + "Active state" header
 	dim = "9BA3C4", -- #9BA3C4  dimmed text (group headings + footer hint)
-	value = "8A9BE0", -- #8A9BE0  the current value column
-	accent = "7386D0", -- #7386D0  hovered row text + footer key names
+	value = "A2B0EA", -- #A2B0EA  the current value column, primary-70
+	accent = "7386D0", -- #7386D0  cursor dot
 	hover_bg = "1C2033", -- #1C2033  hovered row background
+	key = "252A42", -- #252A42  keycap in the key hints
+	edge = "0D0E17", -- #0D0E17  keycap bottom edge
 }) do
 	C[name] = to_ass(rgb)
 end
 
-local function rect_draw(w, h)
-	return string.format("m 0 0 l %d 0 l %d %d l 0 %d", w, w, h, h)
+-- Rounded rectangle with circular corners (bezier handles at 0.5523 of the radius); r = half the side draws a circle.
+local function rrect_draw(w, h, r)
+	r = math.min(r, w / 2, h / 2)
+	local k = r * 0.4477
+	return string.format(
+		"m %.1f 0 l %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f l %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f "
+			.. "l %.1f %.1f b %.1f %.1f 0 %.1f 0 %.1f l 0 %.1f b 0 %.1f %.1f 0 %.1f 0",
+		r, w - r, w - k, w, k, w, r,
+		w, h - r, w, h - k, w - k, h, w - r, h,
+		r, h, k, h, h - k, h - r,
+		r, k, k, r
+	)
 end
 
 local ITEMS = {
@@ -210,6 +222,28 @@ local function round(v)
 	return math.floor(v + 0.5)
 end
 
+-- Key hints: each key on a surface-3 keycap (4 px corners, a darker edge below), its action muted after it.
+-- The OSD font is JetBrains Mono: libass sizes it by its 1320-unit line, so a 600-unit character is 0.455 of the font size wide.
+local function key_hints(x, y, fs, s, hints)
+	local out, cx = {}, x
+	local cw, padx, kh = fs * 0.455, round(6 * s), round(fs * 1.5)
+	for _, hint in ipairs(hints) do
+		for key in hint[1]:gmatch("%S+") do
+			local w = round(ulen(key) * cw + 2 * padx)
+			-- the darker edge is its own shape, not a shadow: osd-border-style=background-box turns a shadow into a square box
+			for _, part in ipairs({ { math.max(1, round(2 * s)), C.edge }, { 0, C.key } }) do
+				out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\p1}%s{\\p0}",
+					round(cx), round(y) + part[1], part[2], rrect_draw(w, kh, round(4 * s)))
+			end
+			out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s", round(cx + padx), round(y), fs, C.text, key)
+			cx = cx + w + round(4 * s)
+		end
+		out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s", round(cx + 2 * s), round(y), fs, C.dim, hint[2])
+		cx = cx + ulen(hint[2]) * cw + round(24 * s)
+	end
+	return table.concat(out, "\n"), cx - x
+end
+
 local overlay = nil
 local active = false
 local refresh_timer = nil
@@ -240,11 +274,14 @@ local function render()
 	end
 	overlay.res_x, overlay.res_y = dim.w, dim.h
 
-	local fs = math.max(14, math.floor(dim.h * 0.026))
-	local group_fs = math.floor(fs * 0.82)
-	local row_h = fs * 1.25
-	local top = 24
-	local pad = fs * 0.6
+	-- Moonlight sizes are px at 1080 lines, scaled to the monitor rather than the window, so text in a window stays as readable as in fullscreen.
+	local s = (mp.get_property_number("display-height") or dim.h) / 1080
+	local fs = math.max(11, round(15 * s))
+	local group_fs = math.max(9, round(12 * s))
+	local row_h = round(28 * s)
+	local pad = round(16 * s)
+	-- Starts below uosc's top bar (32 px, top_bar_size in uosc.conf), its chapter line (24 px) and a 16 px gap, so neither draws over it.
+	local top = round(72 * s) + pad
 	-- widest a row can get before it would run off the video, so a long value
 	-- (a shader chain, an audio filter graph) clips with an ellipsis instead of
 	-- wrapping into the next row's y
@@ -268,7 +305,7 @@ local function render()
 	else
 		for _, group in ipairs(order) do
 			local heading = group:upper()
-			entries[#entries + 1] = { y = y, fs = group_fs, col = C.dim, text = heading }
+			entries[#entries + 1] = { y = y, fs = group_fs, col = C.dim, text = heading, rule = true }
 			max_chars = math.max(max_chars, ulen(heading))
 			y = y + group_fs * 1.25
 			for _, row in ipairs(groups[group]) do
@@ -283,9 +320,10 @@ local function render()
 				local value = utrunc(row.value, value_budget)
 				local plain = row.label .. ": " .. value .. suffix
 				entries[#entries + 1] = {
-					y = row_y,
+					-- Text sits centred in its row; the hit-test keeps the row's own y.
+					y = row_y + (row_h - fs * 1.2) / 2,
 					fs = fs,
-					col = hovered and C.accent or C.text,
+					col = C.text,
 					text = esc(row.label) .. ": ",
 					rest = string.format(
 						"{\\1c&H%s&}%s%s",
@@ -300,40 +338,50 @@ local function render()
 			end
 		end
 	end
-	local footer = "ESC or F3 to close"
-	entries[#entries + 1] = { y = y, fs = group_fs, col = C.dim, text = footer }
-	max_chars = math.max(max_chars, ulen(footer))
-	y = y + group_fs * 1.25
+	local hint_fs = math.max(9, round(13 * s))
+	local hints, hints_w = key_hints(PANEL_X, y + row_h / 2, hint_fs, s, { { "Click", "reset a row" }, { "Esc F3", "close" } })
+	y = y + row_h
 
 	max_chars = math.min(max_chars, avail_chars)
-	local panel_w = max_chars * fs * 0.56 + pad * 2
+	local panel_w = math.max(max_chars * fs * 0.56, hints_w) + pad * 2
 	local panel_h = (y - top) + pad * 2
 	panel_x0, panel_x1 = PANEL_X - pad, PANEL_X - pad + panel_w
 
 	local a = {}
 	a[#a + 1] = string.format(
-		"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H18&\\p1}%s{\\p0}",
+		"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H18&\\p1}%s{\\p0}",
 		round(PANEL_X - pad),
 		round(top - pad),
 		C.border,
 		C.panel,
-		rect_draw(round(panel_w), round(panel_h))
+		rrect_draw(round(panel_w), round(panel_h), round(16 * s))
 	)
-	-- hovered row's own background, drawn under the text
+	-- hovered row's own background, an 8 px chip set 8 px inside the panel, drawn under the text
 	for _, r in ipairs(hit_rows) do
 		if mouse_x and mouse_x >= panel_x0 and mouse_x <= panel_x1 and mouse_y and mouse_y >= r.y0 and mouse_y <= r.y1 then
 			a[#a + 1] = string.format(
-				"{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
-				round(panel_x0),
+				"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
+				round(panel_x0 + 8 * s),
 				round(r.y0),
 				C.hover_bg,
-				rect_draw(round(panel_x1 - panel_x0), round(r.y1 - r.y0))
+				rrect_draw(round(panel_x1 - panel_x0 - 16 * s), round(r.y1 - r.y0), round(8 * s))
 			)
 		end
 	end
 	for _, e in ipairs(entries) do
+		if e.rule then
+			-- section header: the caps label on a hairline that runs to the panel's right padding
+			local rx = PANEL_X + round(ulen(e.text) * e.fs * 0.56 + 8 * s)
+			a[#a + 1] = string.format(
+				"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\p1}%s{\\p0}",
+				rx,
+				round(e.y + e.fs * 0.6),
+				C.border,
+				rrect_draw(math.max(0, round(panel_x1 - pad - rx)), math.max(1, round(s)), 0)
+			)
+		end
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\q2%s\\1c&H%s&}%s%s",
+			"{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\q2%s\\1c&H%s&}%s%s",
 			PANEL_X,
 			round(e.y),
 			e.fs,
@@ -343,16 +391,17 @@ local function render()
 			e.rest or ""
 		)
 	end
+	a[#a + 1] = hints
 
 	-- cursor dot (sits exactly under the real pointer when spaces are aligned)
 	if mouse_x then
 		local r = math.max(3, round(row_h * 0.12))
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord1\\3c&H000000&\\shad0\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord1\\3c&H170E0D&\\shad0\\4a&HFF&\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
 			round(mouse_x - r),
 			round(mouse_y - r),
 			C.accent,
-			rect_draw(r * 2, r * 2)
+			rrect_draw(r * 2, r * 2, r)
 		)
 	end
 

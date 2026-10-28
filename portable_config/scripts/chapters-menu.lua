@@ -230,7 +230,7 @@ local function open_rename(index)
 			title = "Chapter title",
 			items = {
 				{
-					title = "Enter renames it, Esc leaves it alone",
+					title = "Enter rename  \xC2\xB7  Esc keep",
 					align = "center",
 					muted = true,
 					italic = true,

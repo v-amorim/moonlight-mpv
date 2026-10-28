@@ -88,7 +88,7 @@ local function footnote(answer, typed)
         by = "file hash and \"" .. answer.query .. "\"" .. (typed and "" or ", read from the file name")
     end
     return "searched by " .. by .. DOT .. "the check mark means made for this exact file"
-        .. DOT .. "edit the text as Title S01E05 or Title 1999, Enter to search"
+        .. DOT .. "edit the text as Title S01E05 or Title 1999" .. DOT .. "Enter search"
 end
 
 -- The last search, kept so the language filter can redraw without asking the site again.
@@ -124,7 +124,7 @@ local function results_menu(keep_on_filter)
         for _, code in ipairs(langs) do names[#names + 1] = lang_name(code) end
         items[1] = {
             title = "Language: " .. (last.filter and lang_name(last.filter) or "All"),
-            hint = "Enter cycles All" .. DOT .. table.concat(names, DOT),
+            hint = "Enter cycle: All, " .. table.concat(names, ", "),
             icon = "translate",
             value = "filter",
             muted = true,

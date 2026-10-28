@@ -75,10 +75,12 @@
  end
  
  function Menu:back()
-@@ -628,6 +663,39 @@
+@@ -626,6 +661,39 @@
+ 	else
+ 		self.callback({type = 'back'})
  	end
- end
- 
++end
++
 +-- Local patch: walk the tree with the mouse alone, the way a native context menu
 +-- does. `key` names the pending transition, so hovering the same target again
 +-- does not restart its timer, and hovering anything else cancels it.
@@ -110,11 +112,9 @@
 +		action()
 +	end
 +	self.hover_timer = mp.add_timeout(delay, fire)
-+end
-+
+ end
+ 
  ---@param shortcut? Shortcut
- ---@param is_pointer? boolean Whether this was called by a pointer.
- function Menu:activate_selected_item(shortcut, is_pointer)
 @@ -640,8 +708,8 @@
  				self:select_index(1, item.id)
  			end
@@ -130,7 +130,7 @@
  
  	local ass = assdraw.ass_new()
  	local icon_size = self.font_size
-+	local tooltip_text, cascade_rect -- local patch: drawn last, under every level
++	local tooltip_text -- local patch: drawn last, over every level
  
  	---@param menu MenuStack
  	---@param x number
@@ -161,7 +161,7 @@
  		for index = start_index, end_index, 1 do
  			local item = menu.items[index]
  
-@@ -1468,9 +1550,21 @@
+@@ -1468,8 +1550,20 @@
  						is_selected = true
  						request_render()
  					end
@@ -177,48 +177,21 @@
 +					end
  				end
  			end
- 
-+			if is_current and is_selected and item.tooltip then selected_tooltip = item.tooltip end
 +
++			if is_current and is_selected and item.tooltip then selected_tooltip = item.tooltip end
+ 
  			local has_background = is_selected or item.active
  			local next_item = menu.items[index + 1]
- 			local next_is_active = next_item and next_item.active
-@@ -1658,6 +1752,21 @@
+@@ -1656,6 +1750,12 @@
+ 					clip = clip,
+ 				})
  			end
- 		end
- 
++		end
++
 +		-- Local patch: hold the hovered item's tooltip until every level is painted,
-+		-- otherwise the columns drawn after this one cover it. It hangs off the
-+		-- cascade as a whole, so a deeper column can never end up on top of it.
++		-- otherwise the columns drawn after this one cover it. The theme patch draws it.
 +		if is_current and selected_tooltip and not selected_action then
 +			tooltip_text = selected_tooltip
-+		end
-+		if cascade_rect then
-+			cascade_rect.ax = math.min(cascade_rect.ax, bg_rect.ax)
-+			cascade_rect.ay = math.min(cascade_rect.ay, bg_rect.ay)
-+			cascade_rect.bx = math.max(cascade_rect.bx, bg_rect.bx)
-+			cascade_rect.by = math.max(cascade_rect.by, bg_rect.by)
-+		else
-+			cascade_rect = {ax = bg_rect.ax, ay = bg_rect.ay, bx = bg_rect.bx, by = bg_rect.by}
-+		end
-+
+ 		end
+ 
  		-- Footnote / Selected action label
- 		if is_current and (menu.footnote or selected_action) then
- 			local height_half = self.font_size
-@@ -1825,6 +1934,16 @@
- 		parent_menu = parent_menu.parent_menu
- 	end
- 
-+	-- Local patch: hovered item's tooltip, last so no column paints over it
-+	if tooltip_text and cascade_rect then
-+		ass:tooltip(cascade_rect, tooltip_text, {
-+			size = self.font_size,
-+			align = 2,
-+			offset = self.padding * 2,
-+			margin = self.padding,
-+		})
-+	end
-+
- 	return ass
- end
- 

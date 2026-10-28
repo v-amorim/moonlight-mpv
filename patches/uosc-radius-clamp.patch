@@ -1,0 +1,13 @@
+--- a/portable_config/scripts/uosc/lib/ass.lua
++++ b/portable_config/scripts/uosc/lib/ass.lua
+@@ -214,7 +214,9 @@
+ 	self.text = self.text .. '{' .. tags .. '}'
+ 	self:draw_start()
+ 	if opts.radius and opts.radius > 0 then
+-		self:round_rect_cw(ax, ay, bx, by, opts.radius)
++		-- Local patch: a radius past half the short side folds the corners over each other,
++		-- which turns a small badge into a notched box, so it is capped there.
++		self:round_rect_cw(ax, ay, bx, by, math.min(opts.radius, (bx - ax) / 2, (by - ay) / 2))
+ 	else
+ 		self:rect_cw(ax, ay, bx, by)
+ 	end

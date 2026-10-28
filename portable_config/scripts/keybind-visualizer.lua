@@ -207,21 +207,22 @@ local C = {}
 for name, rgb in pairs({
 	dim = "0D0E17", -- #0D0E17  full-screen dim behind the keyboard
 	key_bg = "141726", -- #141726  unbound key fill
-	key_brd = "1C2033", -- #1C2033  unbound key border
-	bind_bg = "1C2033", -- #1C2033  bound key fill
-	bind_brd = "252A42", -- #252A42  bound key border
-	hover_bg = "252A42", -- #252A42  hovered key fill
+	key_brd = "242839", -- #242839  key and control hairline (border over surface-1)
+	bind_bg = "252A42", -- #252A42  bound key fill, the keycap surface
+	bind_brd = "242839", -- #242839  bound key hairline
+	edge = "0D0E17", -- #0D0E17  keycap bottom edge
+	hover_bg = "2F3654", -- #2F3654  hovered key fill
 	hover_brd = "7386D0", -- #7386D0  hovered key border
 	match_bg = "2F3654", -- #2F3654  search-matched key fill
-	match_brd = "B9C6F5", -- #B9C6F5  search-matched key border + query text
-	match_hl = "A2B0EA", -- #A2B0EA  the typed characters inside a description
+	match_brd = "7386D0", -- #7386D0  search-matched key border + search box border, the selected outline
+	match_hl = "A2B0EA", -- #A2B0EA  the typed characters inside a description, the query and the match count
 	text = "EEEEFA", -- #EEEEFA  key labels + info panel text
 	text_dim = "9BA3C4", -- #9BA3C4  unbound key labels + "No bindings" text
 	panel_bg = "141726", -- #141726  info panel background
-	panel_brd = "252A42", -- #252A42  info panel border
+	panel_brd = "242839", -- #242839  info panel hairline
 	accent = "7386D0", -- #7386D0  binding combos + layout button + cursor dot
 	header = "EEEEFA", -- #EEEEFA  info panel title (key name)
-	sep = "6e7681", -- #6e7681  separator line between bindings
+	sep = "242839", -- #242839  separator line between bindings
 }) do
 	C[name] = to_ass(rgb)
 end
@@ -348,6 +349,7 @@ local function has_bindings(id)
 end
 
 local MENU_ICON = "\xE2\x89\xA1" -- ≡, marks a binding that also sits in the uosc menu
+local IDLE_HINT = "Hover a key for its bindings, or type to search them."
 
 local function has_menu(id)
 	for _, b in ipairs(bindings_for(id) or {}) do
@@ -670,58 +672,50 @@ local function rect_draw(w, h)
 	return string.format("m 0 0 l %d 0 l %d %d l 0 %d", w, w, h, h)
 end
 
--- rounded rectangle path (corners approximated with bezier control at corner)
+-- Rounded rectangle with circular corners (bezier handles at 0.5523 of the radius); r = half the side draws a circle.
 local function rrect_draw(w, h, r)
-	if r * 2 > w then
-		r = w / 2
-	end
-	if r * 2 > h then
-		r = h / 2
-	end
-	local wr, hr = w - r, h - r
+	r = math.min(r, w / 2, h / 2)
+	local k = r * 0.4477
 	return string.format(
-		"m %d %d l %d %d b %d %d %d %d %d %d l %d %d b %d %d %d %d %d %d l %d %d b %d %d %d %d %d %d l %d %d b %d %d %d %d %d %d",
-		r,
-		0,
-		wr,
-		0,
-		w,
-		0,
-		w,
-		0,
-		w,
-		r,
-		w,
-		hr,
-		w,
-		h,
-		w,
-		h,
-		wr,
-		h,
-		r,
-		h,
-		0,
-		h,
-		0,
-		h,
-		0,
-		hr,
-		0,
-		r,
-		0,
-		0,
-		0,
-		0,
-		r,
-		0
+		"m %.1f 0 l %.1f 0 b %.1f 0 %.1f %.1f %.1f %.1f l %.1f %.1f b %.1f %.1f %.1f %.1f %.1f %.1f "
+			.. "l %.1f %.1f b %.1f %.1f 0 %.1f 0 %.1f l 0 %.1f b 0 %.1f %.1f 0 %.1f 0",
+		r, w - r, w - k, w, k, w, r,
+		w, h - r, w, h - k, w - k, h, w - r, h,
+		r, h, k, h, h - k, h - r,
+		r, k, k, r
 	)
+end
+
+local function circle_draw(r)
+	return rrect_draw(r * 2, r * 2, r)
 end
 
 local function esc(s)
 	s = s:gsub("\\", "\\\xE2\x81\xA0")
 	s = s:gsub("{", "\\{"):gsub("}", "\\}")
 	return s
+end
+
+-- Key hints: each key on a surface-3 keycap (4 px corners, a darker edge below), its action muted after it.
+-- The OSD font is JetBrains Mono: libass sizes it by its 1320-unit line, so a 600-unit character is 0.455 of the font size wide.
+local function key_hints(x, y, fs, s, hints)
+	local out, cx = {}, x
+	local cw, padx, kh = fs * 0.455, round(6 * s), round(fs * 1.5)
+	for _, hint in ipairs(hints) do
+		for key in hint[1]:gmatch("%S+") do
+			local w = round(ulen(key) * cw + 2 * padx)
+			-- the darker edge is its own shape, not a shadow: osd-border-style=background-box turns a shadow into a square box
+			for _, part in ipairs({ { math.max(1, round(2 * s)), C.edge }, { 0, C.bind_bg } }) do
+				out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\p1}%s{\\p0}",
+					round(cx), round(y) + part[1], part[2], rrect_draw(w, kh, round(4 * s)))
+			end
+			out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s", round(cx + padx), round(y), fs, C.text, key)
+			cx = cx + w + round(4 * s)
+		end
+		out[#out + 1] = string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s", round(cx + 2 * s), round(y), fs, C.text_dim, hint[2])
+		cx = cx + ulen(hint[2]) * cw + round(24 * s)
+	end
+	return table.concat(out, "\n")
 end
 
 -- colored ASS text: the query's own characters stand out from the rest
@@ -925,7 +919,7 @@ local function build_search_lines()
 	lines[#lines + 1] = string.format(
 		"{\\fs%d\\b1\\1c&H%s&}%d match%s{\\b0\\1c&H%s&}",
 		info_fs,
-		C.match_brd,
+		C.match_hl,
 		#match_list,
 		#match_list == 1 and "" or "es",
 		C.text
@@ -1004,8 +998,8 @@ local function render()
 	if load_error or #KEYS == 0 then
 		local msg = load_error or "no keys in layout '" .. layout_name .. "'"
 		overlay.data = string.format(
-			"{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\1a&H70&\\p1}%s{\\p0}\\n"
-				.. "{\\an5\\pos(%d,%d)\\fs%d\\bord2\\shad0\\3c&H000000&\\1c&H%s&}keybind-visualizer: %s",
+			"{\\an7\\pos(0,0)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H70&\\p1}%s{\\p0}\\n"
+				.. "{\\an5\\pos(%d,%d)\\fs%d\\bord2\\shad0\\4a&HFF&\\3c&H170E0D&\\1c&H%s&}keybind-visualizer: %s",
 			C.dim,
 			rect_draw(round(g.sw), round(g.sh)),
 			round(g.sw / 2),
@@ -1022,7 +1016,7 @@ local function render()
 
 	-- full screen dim
 	a[#a + 1] = string.format(
-		"{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\1a&H70&\\p1}%s{\\p0}",
+		"{\\an7\\pos(0,0)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H70&\\p1}%s{\\p0}",
 		C.dim,
 		rect_draw(round(g.sw), round(g.sh))
 	)
@@ -1034,15 +1028,15 @@ local function render()
 		local bw = mouse_body.w * g.ku
 		local bh = mouse_body.h * g.ku
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H10&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H10&\\p1}%s{\\p0}",
 			round(bx),
 			round(by),
 			C.key_brd,
 			C.key_bg,
-			rrect_draw(round(bw), round(bh), round(g.ku * 0.55))
+			rrect_draw(round(bw), round(bh), 12)
 		)
 		a[#a + 1] = string.format(
-			"{\\an5\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}MOUSE",
+			"{\\an5\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}MOUSE",
 			round(bx + bw / 2),
 			round(by + bh * 0.8),
 			round(g.ku * 0.3),
@@ -1063,13 +1057,22 @@ local function render()
 		else
 			bg, brd = C.key_bg, C.key_brd
 		end
+		-- A keycap: 4 px corners, a hairline, and a 2 px darker edge below it, drawn as its own
+		-- shape because osd-border-style=background-box turns a shadow into a square box.
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
+			round(px),
+			round(py) + 2,
+			C.edge,
+			rrect_draw(round(pw), round(ph), 4)
+		)
+		a[#a + 1] = string.format(
+			"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
 			round(px),
 			round(py),
 			brd,
 			bg,
-			rect_draw(round(pw), round(ph))
+			rrect_draw(round(pw), round(ph), 4)
 		)
 	end
 
@@ -1082,7 +1085,7 @@ local function render()
 			col = C.text
 		end
 		a[#a + 1] = string.format(
-			"{\\an5\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}%s",
+			"{\\an5\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s",
 			round(px + pw / 2),
 			round(py + ph / 2),
 			fs,
@@ -1091,7 +1094,7 @@ local function render()
 		)
 		if has_menu(k.id) then
 			a[#a + 1] = string.format(
-				"{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}%s",
+				"{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s",
 				round(px + g.ku * 0.07),
 				round(py + g.ku * 0.02),
 				math.max(1, round(g.ku * 0.22)),
@@ -1109,55 +1112,88 @@ local function render()
 	elseif query ~= "" then
 		panel_lines, content_h = build_search_lines()
 	else
-		panel_lines = {
-			string.format(
-				"{\\fs%d\\1c&H%s&}Hover a key for its bindings, or type to search them.   {\\1c&H%s&}ESC{\\1c&H%s&} to close.",
-				info_fs,
-				C.text,
-				C.accent,
-				C.text
-			),
-		}
+		panel_lines = { string.format("{\\fs%d\\1c&H%s&}%s", info_fs, C.text, IDLE_HINT) }
 		content_h = info_fs * 1.2
 	end
-	local pad_top, pad_bot = g.ku * 0.25, g.ku * 0.25
+	local pad_top, pad_bot = 16, 16
 	local panel_h = math.max(g.ku, math.min(g.panel_max_h, pad_top + content_h + pad_bot))
 
 	a[#a + 1] = string.format(
-		"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H10&\\p1}%s{\\p0}",
+		"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H10&\\p1}%s{\\p0}",
 		round(g.ox),
 		round(g.panel_y),
 		C.panel_brd,
 		C.panel_bg,
-		rect_draw(round(GRID_W * g.ku), round(panel_h))
+		rrect_draw(round(GRID_W * g.ku), round(panel_h), 12)
 	)
 	a[#a + 1] = string.format(
-		"{\\an7\\pos(%d,%d)\\bord0\\shad0\\q2}%s",
-		round(g.ox + g.ku * 0.4),
+		"{\\an7\\pos(%d,%d)\\bord0\\shad0\\4a&HFF&\\q2}%s",
+		round(g.ox + 16),
 		round(g.panel_y + pad_top),
 		table.concat(panel_lines, "\\N")
 	)
+	if not hovered and query == "" then
+		a[#a + 1] = key_hints(
+			g.ox + 16 + (ulen(IDLE_HINT) + 3) * info_fs * 0.455,
+			g.panel_y + pad_top + info_fs * 0.6,
+			info_fs,
+			info_fs / 15,
+			{ { "Esc", "close" } }
+		)
+	end
 
 	-- clickable layout-switch button (header band, above the keyboard)
 	local lay_label = "LAYOUT: " .. layout_name:upper()
 	if #layout_names > 1 then
 		lay_label = lay_label .. "   (click to change)"
 	end
-	local bfs = round(g.header_h * 0.48)
-	local bx, by, bh = g.ox, g.header_y, g.header_h
+	-- the panel's text size, so the header sits on the same step as the rest
+	local bfs = round(g.ku * 0.3)
+	local hy, hh = g.header_y, g.header_h
 	local bw = math.max(g.ku * 4, #lay_label * bfs * 0.5 + g.ku * 0.6)
+
+	-- search fills the header; the layout button is a chip inside its right end
+	local sx, sw = g.ox, GRID_W * g.ku
+	local bx, by, bh = sx + sw - bw - g.ku * 0.12, hy + hh * 0.15, hh * 0.7
+
+	a[#a + 1] = string.format(
+		"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
+		round(sx),
+		round(hy),
+		query ~= "" and C.match_brd or C.bind_brd,
+		query ~= "" and C.match_bg or C.panel_bg,
+		rrect_draw(round(sw), round(hh), 8)
+	)
+	local stext
+	if query == "" then
+		stext = string.format("{\\1c&H%s&}Search: type to filter bindings", C.text_dim)
+	else
+		local hits = string.format("%d hit%s", #match_list, #match_list == 1 and "" or "s")
+		stext = string.format("{\\1c&H%s&}Search: {\\1c&H%s&}%s_{\\1c&H%s&}   %s", C.text, C.match_hl, esc(query), C.text_dim, hits)
+		local typed = ulen("Search: " .. query .. "_   " .. hits) + 3
+		a[#a + 1] = key_hints(sx + g.ku * 0.3 + typed * bfs * 0.455, hy + hh / 2, bfs, bfs / 15, { { "Bksp", "erase" }, { "Esc", "clear" } })
+	end
+	a[#a + 1] = string.format(
+		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\q2}%s",
+		round(sx + g.ku * 0.3),
+		round(hy + hh / 2),
+		bfs,
+		stext
+	)
+
+	-- clickable layout-switch button, drawn after the search box so it can sit inside it
 	button_rect = { x = bx, y = by, w = bw, h = bh }
 	local over_btn = mouse_x ~= nil and mouse_x >= bx and mouse_x <= bx + bw and mouse_y >= by and mouse_y <= by + bh
 	a[#a + 1] = string.format(
-		"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
+		"{\\an7\\pos(%d,%d)\\bord1\\shad0\\4a&HFF&\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
 		round(bx),
 		round(by),
 		over_btn and C.hover_brd or C.bind_brd,
 		over_btn and C.hover_bg or C.bind_bg,
-		rect_draw(round(bw), round(bh))
+		rrect_draw(round(bw), round(bh), 5)
 	)
 	a[#a + 1] = string.format(
-		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c&H%s&}%s",
+		"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\4a&HFF&\\1c&H%s&}%s",
 		round(bx + g.ku * 0.3),
 		round(by + bh / 2),
 		bfs,
@@ -1165,50 +1201,15 @@ local function render()
 		esc(lay_label)
 	)
 
-	-- search box, filling the header band right of the layout button
-	local sx = bx + bw + g.ku * 0.3
-	local sw = g.ox + GRID_W * g.ku - sx
-	if sw > g.ku * 2 then
-		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord2\\shad0\\3c&H%s&\\1c&H%s&\\1a&H08&\\p1}%s{\\p0}",
-			round(sx),
-			round(by),
-			query ~= "" and C.match_brd or C.bind_brd,
-			query ~= "" and C.match_bg or C.bind_bg,
-			rect_draw(round(sw), round(bh))
-		)
-		local stext
-		if query == "" then
-			stext = string.format("{\\1c&H%s&}Search: type to filter bindings", C.text_dim)
-		else
-			stext = string.format(
-				"{\\1c&H%s&}Search: {\\1c&H%s&}%s_{\\1c&H%s&}   %d hit%s   BS erase, ESC clear",
-				C.text,
-				C.match_brd,
-				esc(query),
-				C.text_dim,
-				#match_list,
-				#match_list == 1 and "" or "s"
-			)
-		end
-		a[#a + 1] = string.format(
-			"{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\q2}%s",
-			round(sx + g.ku * 0.3),
-			round(by + bh / 2),
-			bfs,
-			stext
-		)
-	end
-
 	-- cursor dot (sits exactly under the real pointer when spaces are aligned)
 	if mouse_x then
 		local r = math.max(3, round(g.ku * 0.06))
 		a[#a + 1] = string.format(
-			"{\\an7\\pos(%d,%d)\\bord1\\3c&H000000&\\shad0\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
+			"{\\an7\\pos(%d,%d)\\bord1\\3c&H170E0D&\\shad0\\4a&HFF&\\1c&H%s&\\1a&H20&\\p1}%s{\\p0}",
 			round(mouse_x - r),
 			round(mouse_y - r),
 			C.accent,
-			rect_draw(r * 2, r * 2)
+			circle_draw(r)
 		)
 	end
 
